@@ -17,7 +17,7 @@ set -e
 
 DRYRUN=true
 
-IMAGE_NAME="amazon/amazon-ecs-agent"
+IMAGE_NAME="bushev/amazon-ecs-agent"
 
 AWS_PROFILE=""
 STAGE_S3_BUCKET=""
@@ -135,9 +135,9 @@ push_multi-arch_manifest_docker_hub() {
 			# manifest-tool output of the form:
 			#
 			# {
-			#    "amazon/amazon-ecs-agent:sha": [ ...inspected-manifest ],
-			# 	 "amazon/amazon-ecs-agent:arm64-sha": [ ...inspected-manifest ],
-			# 	 "amazon/amazon-ecs-agent:amd64-sha": [ ...inspected-manifest ]
+			#    "bushev/amazon-ecs-agent:sha": [ ...inspected-manifest ],
+			# 	 "bushev/amazon-ecs-agent:arm64-sha": [ ...inspected-manifest ],
+			# 	 "bushev/amazon-ecs-agent:amd64-sha": [ ...inspected-manifest ]
 			# }
 			# The JSON is stored in a file passed in -f parameter
 

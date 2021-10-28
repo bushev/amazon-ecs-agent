@@ -55,7 +55,7 @@ xplatform-build:
 	GOOS=windows GOARCH=amd64 ./scripts/build true "" false
 	GOOS=darwin GOARCH=amd64 ./scripts/build true "" false
 
-BUILDER_IMAGE="amazon/amazon-ecs-agent-build:make"
+BUILDER_IMAGE="bushev/amazon-ecs-agent-build:make"
 .builder-image-stamp: scripts/dockerfiles/Dockerfile.build
 	@docker build --build-arg GO_VERSION=$(GO_VERSION) -f scripts/dockerfiles/Dockerfile.build -t $(BUILDER_IMAGE) .
 	touch .builder-image-stamp
@@ -78,8 +78,8 @@ build-in-docker: .builder-image-stamp .out-stamp
 # or not
 docker: certs build-in-docker pause-container-release cni-plugins .out-stamp
 	@cd scripts && ./create-amazon-ecs-scratch
-	@docker build -f scripts/dockerfiles/Dockerfile.release -t "amazon/amazon-ecs-agent:make" .
-	@echo "Built Docker image \"amazon/amazon-ecs-agent:make\""
+	@docker build -f scripts/dockerfiles/Dockerfile.release -t "bushev/amazon-ecs-agent:make" .
+	@echo "Built Docker image \"bushev/amazon-ecs-agent:make\""
 
 ifeq (${TARGET_OS},windows)
     BUILD="cleanbuild-${TARGET_OS}"
@@ -91,7 +91,7 @@ endif
 # 'RELEASE' mode
 # TODO: make this idempotent
 docker-release: pause-container-release cni-plugins .out-stamp
-	@docker build --build-arg GO_VERSION=${GO_VERSION} -f scripts/dockerfiles/Dockerfile.cleanbuild -t "amazon/amazon-ecs-agent-${BUILD}:make" .
+	@docker build --build-arg GO_VERSION=${GO_VERSION} -f scripts/dockerfiles/Dockerfile.cleanbuild -t "bushev/amazon-ecs-agent-${BUILD}:make" .
 	@docker run --net=none \
 		--env TARGET_OS="${TARGET_OS}" \
 		--env GO111MODULE=auto \
@@ -101,19 +101,19 @@ docker-release: pause-container-release cni-plugins .out-stamp
 		--volume "$(PWD)/out:/out" \
 		--volume "$(PWD):/src/amazon-ecs-agent" \
 		--rm \
-		"amazon/amazon-ecs-agent-${BUILD}:make"
+		"bushev/amazon-ecs-agent-${BUILD}:make"
 
 # Release packages our agent into a "scratch" based dockerfile
 release: certs docker-release
 	@./scripts/create-amazon-ecs-scratch
-	@docker build -f scripts/dockerfiles/Dockerfile.release -t "amazon/amazon-ecs-agent:latest" .
-	@echo "Built Docker image \"amazon/amazon-ecs-agent:latest\""
+	@docker build -f scripts/dockerfiles/Dockerfile.release -t "bushev/amazon-ecs-agent:latest" .
+	@echo "Built Docker image \"bushev/amazon-ecs-agent:latest\""
 
 # We need to bundle certificates with our scratch-based container
 certs: misc/certs/ca-certificates.crt
 misc/certs/ca-certificates.crt:
-	docker build -t "amazon/amazon-ecs-agent-cert-source:make" misc/certs/
-	docker run "amazon/amazon-ecs-agent-cert-source:make" cat /etc/ssl/certs/ca-certificates.crt > misc/certs/ca-certificates.crt
+	docker build -t "bushev/amazon-ecs-agent-cert-source:make" misc/certs/
+	docker run "bushev/amazon-ecs-agent-cert-source:make" cat /etc/ssl/certs/ca-certificates.crt > misc/certs/ca-certificates.crt
 
 gogenerate:
 	go generate -x ./agent/...
@@ -313,8 +313,8 @@ get-deps: .get-deps-stamp
 clean:
 	# ensure docker is running and we can talk to it, abort if not:
 	docker ps > /dev/null
-	-docker rmi $(BUILDER_IMAGE) "amazon/amazon-ecs-agent-cleanbuild:make"
-	-docker rmi $(BUILDER_IMAGE) "amazon/amazon-ecs-agent-cleanbuild-windows:make"
+	-docker rmi $(BUILDER_IMAGE) "bushev/amazon-ecs-agent-cleanbuild:make"
+	-docker rmi $(BUILDER_IMAGE) "bushev/amazon-ecs-agent-cleanbuild-windows:make"
 	rm -f misc/certs/ca-certificates.crt &> /dev/null
 	rm -rf out/
 	-$(MAKE) -C $(ECS_CNI_REPOSITORY_SRC_DIR) clean

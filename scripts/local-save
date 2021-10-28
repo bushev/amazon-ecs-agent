@@ -15,7 +15,7 @@
 
 set -ex
 
-IMAGE_NAME="amazon/amazon-ecs-agent:latest"
+IMAGE_NAME="bushev/amazon-ecs-agent:latest"
 
 stage() {
 	local tarball="./out/ecs-agent.tar"

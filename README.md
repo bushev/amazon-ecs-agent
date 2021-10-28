@@ -23,7 +23,7 @@ On the [Amazon Linux AMI](https://aws.amazon.com/amazon-linux-ami/), we provide 
 
 The Amazon ECS Container Agent may also be run in a Docker container on an EC2 instance with a recent Docker version
 installed. A Docker image is available in our
-[Docker Hub Repository](https://registry.hub.docker.com/u/amazon/amazon-ecs-agent/).
+[Docker Hub Repository](https://registry.hub.docker.com/u/bushev/amazon-ecs-agent/).
 
 ```bash
 $ # Set up directories the agent uses
@@ -46,7 +46,7 @@ $ docker run --name ecs-agent \
     --env=ECS_DATADIR=/data/ \
     --env=ECS_ENABLE_TASK_IAM_ROLE=true \
     --env=ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true \
-    amazon/amazon-ecs-agent:latest
+    bushev/amazon-ecs-agent:latest
 ```
 
 ### On Other Linux AMIs when awsvpc networking mode is enabled
@@ -83,7 +83,7 @@ $ /usr/bin/docker run --name ecs-agent \
 --env ECS_AVAILABLE_LOGGING_DRIVERS='["json-file","awslogs","syslog","none"]' \
 --env ECS_LOGLEVEL=info \
 --detach \
-amazon/amazon-ecs-agent:latest
+bushev/amazon-ecs-agent:latest
 ```
 
 See also the Advanced Usage section below.

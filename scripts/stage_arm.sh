@@ -50,7 +50,7 @@ stage_s3() {
 
 	generate_manifest ${IMAGE_TAG_VERSION} > "${tarball_manifest}"
 
-	docker save "amazon/amazon-ecs-agent:latest" > "${tarball}"
+	docker save "bushev/amazon-ecs-agent:latest" > "${tarball}"
 	md5sum "${tarball}" | sed 's/ .*//' > "${tarball_md5}"
 	echo "Saved with md5sum $(cat ${tarball_md5})"
 

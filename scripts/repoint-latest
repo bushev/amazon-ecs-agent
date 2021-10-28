@@ -17,7 +17,7 @@ set -e
 
 DRYRUN=true
 
-IMAGE_NAME="amazon/amazon-ecs-agent"
+IMAGE_NAME="bushev/amazon-ecs-agent"
 
 AWS_PROFILE=""
 PUBLISH_S3_BUCKET="amazon-ecs-agent"
@@ -96,13 +96,13 @@ unpublish_docker() {
 		exit 1
 	fi
 
-	echo "Removing any amazon/amazon-ecs-agent images for safety"
-	docker images -q amazon/amazon-ecs-agent | xargs -r -L 1 docker rmi -f
+	echo "Removing any bushev/amazon-ecs-agent images for safety"
+	docker images -q bushev/amazon-ecs-agent | xargs -r -L 1 docker rmi -f
 
 	docker load < "${tarball}"
 
 	echo "Tagging as ${IMAGE_NAME}:${IMAGE_TAG_LATEST}"
-	docker tag amazon/amazon-ecs-agent:latest "${IMAGE_NAME}:${IMAGE_TAG_LATEST}"
+	docker tag bushev/amazon-ecs-agent:latest "${IMAGE_NAME}:${IMAGE_TAG_LATEST}"
 	echo "Pushing ${IMAGE_NAME}:${IMAGE_TAG_LATEST}"
 	dryval docker push "${IMAGE_NAME}:${IMAGE_TAG_LATEST}"
 

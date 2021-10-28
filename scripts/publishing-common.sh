@@ -76,7 +76,7 @@ tag_and_push_docker() {
 	IMAGE_TAG=${2}
 
 	echo "Tagging as ${IMAGE_NAME}:${IMAGE_TAG}"
-	docker tag amazon/amazon-ecs-agent:latest "${IMAGE_NAME}:${IMAGE_TAG}"
+	docker tag bushev/amazon-ecs-agent:latest "${IMAGE_NAME}:${IMAGE_TAG}"
 	echo "Pushing ${IMAGE_NAME}:${IMAGE_TAG}"
 	dryval docker push "${IMAGE_NAME}:${IMAGE_TAG}"
 }

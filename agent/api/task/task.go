@@ -1372,9 +1372,15 @@ func (task *Task) DockerConfig(container *apicontainer.Container, apiVersion doc
 }
 
 func (task *Task) dockerConfig(container *apicontainer.Container, apiVersion dockerclient.DockerVersion) (*dockercontainer.Config, *apierrors.DockerClientConfigError) {
+
+	fmt.Printf("TASKKKKKKK")
+	fmt.Printf(task)
+	fmt.Printf("TASKKKKKKK2222", task)
+
 	dockerEnv := make([]string, 0, len(container.Environment))
 	for envKey, envVal := range container.Environment {
 		dockerEnv = append(dockerEnv, envKey+"="+envVal)
+		////////
 	}
 
 	var entryPoint []string

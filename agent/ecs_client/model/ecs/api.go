@@ -4976,7 +4976,7 @@ type ContainerDefinition struct {
 	//    example, ubuntu or mongo).
 	//
 	//    * Images in other repositories on Docker Hub are qualified with an organization
-	//    name (for example, amazon/amazon-ecs-agent).
+	//    name (for example, bushev/amazon-ecs-agent).
 	//
 	//    * Images in other online repositories are qualified further by a domain
 	//    name (for example, quay.io/assemblyline/ubuntu).
