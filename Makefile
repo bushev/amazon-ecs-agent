@@ -78,8 +78,8 @@ build-in-docker: .builder-image-stamp .out-stamp
 # or not
 docker: certs build-in-docker pause-container-release cni-plugins .out-stamp
 	@cd scripts && ./create-amazon-ecs-scratch
-	@docker build -f scripts/dockerfiles/Dockerfile.release -t "amazon/amazon-ecs-agent:make" .
-	@echo "Built Docker image \"amazon/amazon-ecs-agent:make\""
+	@docker build -f scripts/dockerfiles/Dockerfile.release -t "bushev/amazon-ecs-agent:make" .
+	@echo "Built Docker image \"bushev/amazon-ecs-agent:make\""
 
 ifeq (${TARGET_OS},windows)
     BUILD="cleanbuild-${TARGET_OS}"

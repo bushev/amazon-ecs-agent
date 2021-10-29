@@ -16,6 +16,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1254,6 +1255,43 @@ func (engine *DockerTaskEngine) createContainer(task *apitask.Task, container *a
 				task.Arn, container.Name, mderr)
 		}
 	}
+
+	//############## CUSTOM CODESNACK PART START
+
+	// For testing custom host configuration
+	// container.MergeEnvironmentVariables(map[string]string{
+	// 	"CODESNACK_DOCKER_HOST_CONFIG": `{
+	// 		"StorageOpt": {
+	// 			"size": "20G"
+	// 		},
+	// 		"DNS": ["8.8.8.8"],
+	// 		"NetworkMode": "test-network"
+	// 	}`,
+	// })
+
+	CODESNACK_DOCKER_HOST_CONFIG, hasCustomParams := container.Environment["CODESNACK_DOCKER_HOST_CONFIG"]
+
+	if hasCustomParams {
+		fmt.Printf("CODESNACK_DOCKER_HOST_CONFIG %s.", CODESNACK_DOCKER_HOST_CONFIG)
+
+		var customHostConfig dockercontainer.HostConfig
+
+		json.Unmarshal([]byte(CODESNACK_DOCKER_HOST_CONFIG), &customHostConfig)
+
+		if customHostConfig.StorageOpt != nil {
+			hostConfig.StorageOpt = customHostConfig.StorageOpt
+		}
+
+		if customHostConfig.DNS != nil {
+			hostConfig.DNS = customHostConfig.DNS
+		}
+
+		if customHostConfig.NetworkMode != "" {
+			hostConfig.NetworkMode = customHostConfig.NetworkMode
+		}
+	}
+
+	//############## CUSTOM CODESNACK PART END
 
 	createContainerBegin := time.Now()
 	metadata := client.CreateContainer(engine.ctx, config, hostConfig,
