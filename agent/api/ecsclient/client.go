@@ -310,7 +310,7 @@ func getCpuAndMemory() (int64, int64) {
 		seelog.Errorf("Unable to get memory info: %v", err)
 	}
 
-	cpu := runtime.NumCPU() * 1024
+	cpu := runtime.NumCPU() * 1024 * 4 // Multiplied by 4 to allow run more containers
 
 	return int64(cpu), mem
 }
