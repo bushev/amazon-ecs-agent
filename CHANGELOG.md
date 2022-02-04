@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.58.0
+* Enhancement - Update agent build go version to 1.17.5 [#3105](https://github.com/aws/amazon-ecs-agent/pull/3105)
+* Enhancement - bumped pause container gcc build version [#3108](https://github.com/aws/amazon-ecs-agent/pull/3108)
+
+## 1.57.1
+* Enhancement - Remove unused TopContainer API [#3079](https://github.com/aws/amazon-ecs-agent/pull/3079)
+* Enhancement - Add support for metrics when using awsvpc network mode on Windows [#3087](https://github.com/aws/amazon-ecs-agent/pull/3087)
+* Enhancement - Update Agent build golang version to 1.17.3 [#3097](https://github.com/aws/amazon-ecs-agent/pull/3097)
+* Enhancement - Lower task cleanup duration [#3088](https://github.com/aws/amazon-ecs-agent/pull/3088)
+* Bug - Fix memory leak in task stats collector [#3082](https://github.com/aws/amazon-ecs-agent/pull/3082) 
+
+## 1.57.0
+* Feature - Add instance health status feature. [#3071](https://github.com/aws/amazon-ecs-agent/pull/3071)
+* Enhancement - Bumps github.com/containerd/containerd from 1.3.2 to 1.4.11. [#3073](https://github.com/aws/amazon-ecs-agent/pull/3073)
+* Bug - Fixes [#2865](https://github.com/aws/amazon-ecs-agent/issues/2865) caused by a memory leak in stats collector [#3069](https://github.com/aws/amazon-ecs-agent/pull/3069)
+
 ## 1.56.0
 * Feature - Enabling ECS Exec for Windows workloads running on ECS EC2 [#3053](https://github.com/aws/amazon-ecs-agent/pull/3053)
 

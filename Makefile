@@ -226,7 +226,6 @@ cni-plugins: get-cni-sources .out-stamp build-ecs-cni-plugins build-vpc-cni-plug
 
 .PHONY: codebuild
 codebuild: .out-stamp
-	./scripts/ci-ecr-pull "us-west-2" 508403128001
 	$(MAKE) release TARGET_OS="linux"
 	TARGET_OS="linux" ./scripts/local-save
 	$(MAKE) docker-release TARGET_OS="windows"
@@ -305,7 +304,7 @@ GOPATH=$(shell go env GOPATH)
 	cd "${GOPATH}/src/github.com/golang/mock/mockgen" && git checkout 1.3.1 && go get ./... && go install ./... && cd -
 	go get golang.org/x/tools/cmd/goimports
 	GO111MODULE=on go get github.com/fzipp/gocyclo/cmd/gocyclo@v0.3.1
-	go get honnef.co/go/tools/cmd/staticcheck
+	GO111MODULE=on go get honnef.co/go/tools/cmd/staticcheck@v0.2.1
 	touch .get-deps-stamp
 
 get-deps: .get-deps-stamp

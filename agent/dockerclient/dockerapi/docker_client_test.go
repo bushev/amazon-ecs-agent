@@ -762,39 +762,6 @@ func TestInspectContainer(t *testing.T) {
 	assert.True(t, reflect.DeepEqual(&containerOutput, container))
 }
 
-func TestTopContainerTimeout(t *testing.T) {
-	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
-	defer done()
-
-	wait := &sync.WaitGroup{}
-	wait.Add(1)
-	mockDockerSDK.EXPECT().ContainerTop(gomock.Any(), "id", gomock.Any()).Do(func(ctx context.Context, x interface{}, y interface{}) {
-		wait.Wait()
-	}).MaxTimes(1).Return(dockercontainer.ContainerTopOKBody{}, nil)
-
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-	_, err := client.TopContainer(ctx, "id", xContainerShortTimeout)
-	assert.Error(t, err, "Expected error for top timeout")
-	assert.Equal(t, "DockerTimeoutError", err.(apierrors.NamedError).ErrorName())
-	wait.Done()
-}
-
-func TestTopContainer(t *testing.T) {
-	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
-	defer done()
-
-	topOutput := dockercontainer.ContainerTopOKBody{}
-	gomock.InOrder(
-		mockDockerSDK.EXPECT().ContainerTop(gomock.Any(), "id", gomock.Any()).Return(topOutput, nil),
-	)
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-	topResponse, err := client.TopContainer(ctx, "id", dockerclient.TopContainerTimeout, "pid")
-	assert.NoError(t, err)
-	assert.Equal(t, &topOutput, topResponse)
-}
-
 func TestContainerEvents(t *testing.T) {
 	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
 	defer done()
@@ -1319,6 +1286,18 @@ func TestUnavailableVersionError(t *testing.T) {
 	}
 }
 
+func waitForStatsChanClose(statsChan <-chan *types.StatsJSON) (closed bool) {
+	i := 0
+	for range statsChan {
+		if i == 10 {
+			return false
+		}
+		i++
+		time.Sleep(time.Millisecond * 10)
+	}
+	return true
+}
+
 func TestStatsNormalExit(t *testing.T) {
 	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
 	defer done()
@@ -1336,6 +1315,12 @@ func TestStatsNormalExit(t *testing.T) {
 
 	assert.Equal(t, uint64(50), newStat.MemoryStats.Usage)
 	assert.Equal(t, uint64(100), newStat.CPUStats.SystemUsage)
+
+	// stop container stats
+	cancel()
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(stats)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsErrorReading(t *testing.T) {
@@ -1349,9 +1334,12 @@ func TestStatsErrorReading(t *testing.T) {
 	}, errors.New("test error"))
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	_, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
+	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 
 	assert.Error(t, <-errC)
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsErrorDecoding(t *testing.T) {
@@ -1365,8 +1353,11 @@ func TestStatsErrorDecoding(t *testing.T) {
 	}, nil)
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	_, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
+	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 	assert.Error(t, <-errC)
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsClientError(t *testing.T) {
@@ -1382,9 +1373,9 @@ func TestStatsClientError(t *testing.T) {
 	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 	// should get an error from the channel
 	err := <-errC
-	// stats channel should be closed (ok=false)
-	_, ok := <-statsC
-	assert.False(t, ok)
+	// stats channel should be closed
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 	assert.Error(t, err)
 }
 

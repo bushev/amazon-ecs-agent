@@ -281,7 +281,7 @@ func (engine *DockerStatsEngine) addToStatsTaskMapUnsafe(task *apitask.Task, doc
 			}
 			containerpid := strconv.Itoa(containerInspect.State.Pid)
 			statsTaskContainer, err = newStatsTaskContainer(task.Arn, containerpid, numberOfContainers,
-				engine.resolver, engine.config.PollingMetricsWaitDuration)
+				engine.resolver, engine.config.PollingMetricsWaitDuration, task.ENIs)
 			if err != nil {
 				return
 			}
@@ -583,7 +583,8 @@ func (engine *DockerStatsEngine) handleDockerEvents(events ...interface{}) error
 		case apicontainerstatus.ContainerStopped:
 			engine.removeContainer(dockerContainerChangeEvent.DockerID)
 		default:
-			seelog.Debugf("Ignoring event for container, id: %s, status: %d", dockerContainerChangeEvent.DockerID, dockerContainerChangeEvent.Status)
+			seelog.Debugf("Ignoring event for container, id: %s, status: %d",
+				dockerContainerChangeEvent.DockerID, dockerContainerChangeEvent.Status)
 		}
 	}
 

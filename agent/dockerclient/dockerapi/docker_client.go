@@ -145,11 +145,6 @@ type DockerClient interface {
 	// provided for the request.
 	InspectContainer(context.Context, string, time.Duration) (*types.ContainerJSON, error)
 
-	// TopContainer returns information about the top processes running in the specified container.  A timeout value and a context
-	// should be provided for the request. The last argument is an optional parameter for passing in 'ps' arguments
-	// as part of the top command.
-	TopContainer(context.Context, string, time.Duration, ...string) (*dockercontainer.ContainerTopOKBody, error)
-
 	// CreateContainerExec creates a new exec configuration to run an exec process with the provided Config. A timeout value
 	// and a context should be provided for the request.
 	CreateContainerExec(ctx context.Context, containerID string, execConfig types.ExecConfig, timeout time.Duration) (*types.IDResponse, error)
@@ -569,6 +564,7 @@ func (dg *dockerGoClient) createContainer(ctx context.Context,
 	config *dockercontainer.Config,
 	hostConfig *dockercontainer.HostConfig,
 	name string) DockerContainerMetadata {
+
 	client, err := dg.sdkDockerClient()
 	if err != nil {
 		return DockerContainerMetadata{Error: CannotGetDockerClientError{version: dg.version, err: err}}
@@ -610,8 +606,8 @@ func (dg *dockerGoClient) startContainer(ctx context.Context, id string) DockerC
 	if err != nil {
 		return DockerContainerMetadata{Error: CannotGetDockerClientError{version: dg.version, err: err}}
 	}
-
 	err = client.ContainerStart(ctx, id, types.ContainerStartOptions{})
+
 	metadata := dg.containerMetadata(ctx, id)
 	if err != nil {
 		metadata.Error = CannotStartContainerError{err}
@@ -684,45 +680,6 @@ func (dg *dockerGoClient) inspectContainer(ctx context.Context, dockerID string)
 	}
 	containerData, err := client.ContainerInspect(ctx, dockerID)
 	return &containerData, err
-}
-
-func (dg *dockerGoClient) TopContainer(ctx context.Context, dockerID string, timeout time.Duration, psArgs ...string) (*dockercontainer.ContainerTopOKBody, error) {
-	type topResponse struct {
-		top *dockercontainer.ContainerTopOKBody
-		err error
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	defer metrics.MetricsEngineGlobal.RecordDockerMetric("TOP_CONTAINER")()
-	// Buffered channel so in the case of timeout it takes one write, never gets
-	// read, and can still be GC'd
-	response := make(chan topResponse, 1)
-	go func() {
-		top, err := dg.topContainer(ctx, dockerID, psArgs...)
-		response <- topResponse{top, err}
-	}()
-
-	// Wait until we get a response or for the 'done' context channel
-	select {
-	case resp := <-response:
-		return resp.top, resp.err
-	case <-ctx.Done():
-		err := ctx.Err()
-		if err == context.DeadlineExceeded {
-			return nil, &DockerTimeoutError{timeout, "listing top"}
-		}
-
-		return nil, &CannotGetContainerTopError{err}
-	}
-}
-
-func (dg *dockerGoClient) topContainer(ctx context.Context, dockerID string, psArgs ...string) (*dockercontainer.ContainerTopOKBody, error) {
-	client, err := dg.sdkDockerClient()
-	if err != nil {
-		return nil, err
-	}
-	topResponse, err := client.ContainerTop(ctx, dockerID, psArgs)
-	return &topResponse, err
 }
 
 func (dg *dockerGoClient) StopContainer(ctx context.Context, dockerID string, timeout time.Duration) DockerContainerMetadata {
@@ -1441,7 +1398,7 @@ func (dg *dockerGoClient) APIVersion() (dockerclient.DockerVersion, error) {
 func (dg *dockerGoClient) Stats(ctx context.Context, id string, inactivityTimeout time.Duration) (<-chan *types.StatsJSON, <-chan error) {
 	subCtx, cancelRequest := context.WithCancel(ctx)
 
-	errC := make(chan error)
+	errC := make(chan error, 1)
 	statsC := make(chan *types.StatsJSON)
 	client, err := dg.sdkDockerClient()
 	if err != nil {
@@ -1487,7 +1444,12 @@ func (dg *dockerGoClient) Stats(ctx context.Context, id string, inactivityTimeou
 					return
 				}
 
-				statsC <- data
+				select {
+				case <-ctx.Done():
+					return
+				case statsC <- data:
+				}
+
 				data = new(types.StatsJSON)
 			}
 		}()
@@ -1504,8 +1466,11 @@ func (dg *dockerGoClient) Stats(ctx context.Context, id string, inactivityTimeou
 				errC <- err
 				return
 			}
-			statsC <- stats
-
+			select {
+			case <-ctx.Done():
+				return
+			case statsC <- stats:
+			}
 			// sleeping here jitters the time at which the ticker is created, so that
 			// containers do not synchronize on calling the docker stats api.
 			// the max sleep is 80% of the polling interval so that we have a chance to
@@ -1519,7 +1484,11 @@ func (dg *dockerGoClient) Stats(ctx context.Context, id string, inactivityTimeou
 					errC <- err
 					return
 				}
-				statsC <- stats
+				select {
+				case <-ctx.Done():
+					return
+				case statsC <- stats:
+				}
 			}
 		}()
 	}
