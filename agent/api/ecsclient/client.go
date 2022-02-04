@@ -305,7 +305,7 @@ func getCpuAndMemory() (int64, int64) {
 	memInfo, err := system.ReadMemInfo()
 	mem := int64(0)
 	if err == nil {
-		mem = memInfo.MemTotal / 1024 / 1024 // MiB
+		mem = (memInfo.MemTotal / 1024 / 1024) * 4 // MiB | Multiplied by 4 to allow run more containers
 	} else {
 		seelog.Errorf("Unable to get memory info: %v", err)
 	}
