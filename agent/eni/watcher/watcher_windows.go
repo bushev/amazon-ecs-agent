@@ -1,4 +1,5 @@
 //go:build windows
+// +build windows
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -58,8 +59,6 @@ func newWatcher(ctx context.Context,
 	state dockerstate.TaskEngineState,
 	stateChangeEvents chan<- statechange.Event) (*ENIWatcher, error) {
 
-	derivedContext, cancel := context.WithCancel(ctx)
-
 	eniMonitor := iphelperwrapper.NewMonitor()
 	notificationChannel := make(chan int)
 	err := eniMonitor.Start(notificationChannel)
@@ -68,6 +67,7 @@ func newWatcher(ctx context.Context,
 	}
 	log.Info("windows eni watcher has been initialized")
 
+	derivedContext, cancel := context.WithCancel(ctx)
 	return &ENIWatcher{
 		ctx:              derivedContext,
 		cancel:           cancel,
@@ -170,10 +170,4 @@ func (eniWatcher *ENIWatcher) getAllInterfaces() (state map[string]int, err erro
 		}
 	}
 	return state, nil
-}
-
-// SetNetworkUtils is used for injecting NetworkUtils instance in eniWatcher
-// This will be handy while testing to inject mock objects
-func (eniWatcher *ENIWatcher) SetNetworkUtils(utils networkutils.NetworkUtils) {
-	eniWatcher.netutils = utils
 }

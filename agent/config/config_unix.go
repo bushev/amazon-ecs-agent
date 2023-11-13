@@ -1,4 +1,5 @@
 //go:build !windows
+// +build !windows
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -22,6 +23,7 @@ import (
 
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/tmds"
 )
 
 const (
@@ -33,8 +35,13 @@ const (
 	// defaultRuntimeStatsLogFile stores the path where the golang runtime stats are periodically logged
 	defaultRuntimeStatsLogFile = `/log/agent-runtime-stats.log`
 
-	// DefaultTaskCgroupPrefix is default cgroup prefix for ECS tasks
-	DefaultTaskCgroupPrefix = "/ecs"
+	// DefaultTaskCgroupV1Prefix is default cgroup v1 prefix for ECS tasks
+	DefaultTaskCgroupV1Prefix = "/ecs"
+	// DefaultTaskCgroupV2Prefix is default cgroup v2 prefix for ECS tasks
+	// ecstasks is used because this creates a systemd "slice", and using just
+	// ecs would create a confusing name conflict with the ecs systemd service.
+	// (we would have both ecs.service and ecs.slice in /sys/fs/cgroup).
+	DefaultTaskCgroupV2Prefix = "ecstasks"
 
 	// Default cgroup memory system root path, this is the default used if the
 	// path has not been configured through ECS_CGROUP_PATH
@@ -55,7 +62,7 @@ const (
 func DefaultConfig() Config {
 	return Config{
 		DockerEndpoint:                      "unix:///var/run/docker.sock",
-		ReservedPorts:                       []uint16{SSHPort, DockerReservedPort, DockerReservedSSLPort, AgentIntrospectionPort, AgentCredentialsPort},
+		ReservedPorts:                       []uint16{SSHPort, DockerReservedPort, DockerReservedSSLPort, AgentIntrospectionPort, tmds.Port},
 		ReservedPortsUDP:                    []uint16{},
 		DataDir:                             "/data/",
 		DataDirOnHost:                       "/var/lib/ecs",
@@ -94,8 +101,9 @@ func DefaultConfig() Config {
 		PollingMetricsWaitDuration:          DefaultPollingMetricsWaitDuration,
 		NvidiaRuntime:                       DefaultNvidiaRuntime,
 		CgroupCPUPeriod:                     defaultCgroupCPUPeriod,
-		GMSACapable:                         false,
-		FSxWindowsFileServerCapable:         false,
+		GMSACapable:                         parseGMSACapability(),
+		GMSADomainlessCapable:               parseGMSADomainlessCapability(),
+		FSxWindowsFileServerCapable:         BooleanDefaultTrue{Value: ExplicitlyDisabled},
 		RuntimeStatsLogFile:                 defaultRuntimeStatsLogFile,
 		EnableRuntimeStats:                  BooleanDefaultFalse{Value: NotSet},
 		ShouldExcludeIPv6PortBinding:        BooleanDefaultTrue{Value: ExplicitlyEnabled},

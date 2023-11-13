@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -21,12 +22,13 @@ import (
 	"time"
 
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	apieni "github.com/aws/amazon-ecs-agent/agent/api/eni"
 	mock_api "github.com/aws/amazon-ecs-agent/agent/api/mocks"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
-	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
 	mock_dockerstate "github.com/aws/amazon-ecs-agent/agent/engine/dockerstate/mocks"
+	apicontainerstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/container/status"
+	apitaskstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/task/status"
+	ni "github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/networkinterface"
+
 	"github.com/docker/docker/api/types"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -38,6 +40,7 @@ const (
 	cluster                  = "default"
 	family                   = "sleep"
 	version                  = "1"
+	serviceName              = "someService"
 	containerID              = "cid"
 	containerName            = "sleepy"
 	imageName                = "busybox"
@@ -53,6 +56,7 @@ const (
 	volSource                = "/var/lib/volume1"
 	volDestination           = "/volume"
 	availabilityZone         = "us-west-2b"
+	vpcID                    = "test-vpc-id"
 	containerInstanceArn     = "containerInstance-test"
 )
 
@@ -67,16 +71,17 @@ func TestNewTaskContainerResponses(t *testing.T) {
 		Arn:                 taskARN,
 		Family:              family,
 		Version:             version,
+		ServiceName:         serviceName,
 		DesiredStatusUnsafe: apitaskstatus.TaskRunning,
 		KnownStatusUnsafe:   apitaskstatus.TaskRunning,
-		ENIs: []*apieni.ENI{
+		ENIs: []*ni.NetworkInterface{
 			{
-				IPV4Addresses: []*apieni.ENIIPV4Address{
+				IPV4Addresses: []*ni.IPV4Address{
 					{
 						Address: eniIPv4Address,
 					},
 				},
-				IPV6Addresses: []*apieni.ENIIPV6Address{
+				IPV6Addresses: []*ni.IPV6Address{
 					{
 						Address: eniIPv6Address,
 					},
@@ -133,7 +138,8 @@ func TestNewTaskContainerResponses(t *testing.T) {
 		state.EXPECT().TaskByArn(taskARN).Return(task, true),
 	)
 
-	taskResponse, err := NewTaskResponse(taskARN, state, ecsClient, cluster, availabilityZone, containerInstanceArn, false)
+	taskResponse, err := NewTaskResponse(taskARN, state, ecsClient, cluster,
+		availabilityZone, vpcID, containerInstanceArn, task.ServiceName, false)
 	require.NoError(t, err)
 	_, err = json.Marshal(taskResponse)
 	require.NoError(t, err)
@@ -142,6 +148,7 @@ func TestNewTaskContainerResponses(t *testing.T) {
 	assert.Equal(t, eniIPv6Address, taskResponse.Containers[0].Networks[0].IPv6Addresses[0])
 	assert.Equal(t, ipv6SubnetCIDRBlock, taskResponse.Containers[0].Networks[0].IPv6SubnetCIDRBlock)
 	assert.Equal(t, subnetGatewayIPV4Address, taskResponse.Containers[0].Networks[0].SubnetGatewayIPV4Address)
+	assert.Equal(t, serviceName, taskResponse.ServiceName)
 
 	gomock.InOrder(
 		state.EXPECT().ContainerByID(containerID).Return(dockerContainer, true),

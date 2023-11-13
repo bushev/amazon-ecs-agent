@@ -13,7 +13,9 @@
 
 package api
 
-import "github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
+import (
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/model/ecs"
+)
 
 // ECSClient is an interface over the ECSSDK interface which abstracts away some
 // details around constructing the request and reading the response down to the
@@ -44,11 +46,16 @@ type ECSClient interface {
 	// DiscoverTelemetryEndpoint takes a ContainerInstanceARN and returns the
 	// endpoint at which this Agent should contact Telemetry Service
 	DiscoverTelemetryEndpoint(containerInstanceArn string) (string, error)
+	// DiscoverServiceConnectEndpoint takes a ContainerInstanceARN and returns the
+	// endpoint at which this Agent should contact ServiceConnect
+	DiscoverServiceConnectEndpoint(containerInstanceArn string) (string, error)
 	// GetResourceTags retrieves the Tags associated with a certain resource
 	GetResourceTags(resourceArn string) ([]*ecs.Tag, error)
 	// UpdateContainerInstancesState updates the given container Instance ID with
 	// the given status. Only valid statuses are ACTIVE and DRAINING.
 	UpdateContainerInstancesState(instanceARN, status string) error
+	// GetHostResources retrieves a map that map the resource name to the corresponding resource
+	GetHostResources() (map[string]*ecs.Resource, error)
 }
 
 // ECSSDK is an interface that specifies the subset of the AWS Go SDK's ECS

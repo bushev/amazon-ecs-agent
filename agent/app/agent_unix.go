@@ -1,4 +1,5 @@
 //go:build linux
+// +build linux
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -20,14 +21,17 @@ import (
 
 	asmfactory "github.com/aws/amazon-ecs-agent/agent/asm/factory"
 	"github.com/aws/amazon-ecs-agent/agent/config"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
-	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
+	"github.com/aws/amazon-ecs-agent/agent/dockerclient/dockerapi"
+	ebs "github.com/aws/amazon-ecs-agent/agent/ebs"
 	"github.com/aws/amazon-ecs-agent/agent/ecscni"
 	"github.com/aws/amazon-ecs-agent/agent/engine"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	"github.com/aws/amazon-ecs-agent/agent/eni/watcher"
 	"github.com/aws/amazon-ecs-agent/agent/gpu"
+	s3factory "github.com/aws/amazon-ecs-agent/agent/s3/factory"
 	ssmfactory "github.com/aws/amazon-ecs-agent/agent/ssm/factory"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/model/ecs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
 
 	"github.com/aws/amazon-ecs-agent/agent/statechange"
 	"github.com/aws/amazon-ecs-agent/agent/taskresource"
@@ -42,7 +46,8 @@ const initPID = 1
 
 // awsVPCCNIPlugins is a list of CNI plugins required by the ECS Agent
 // to configure the ENI for a task
-var awsVPCCNIPlugins = []string{ecscni.ECSENIPluginName,
+var awsVPCCNIPlugins = []string{
+	ecscni.VPCENIPluginName,
 	ecscni.ECSBridgePluginName,
 	ecscni.ECSIPAMPluginName,
 	ecscni.ECSAppMeshPluginName,
@@ -98,7 +103,7 @@ func (agent *ecsAgent) initializeTaskENIDependencies(state dockerstate.TaskEngin
 // verifyCNIPluginsCapabilities returns an error if there's an error querying
 // capabilities or if the required capability is absent from the capabilities
 // of the following plugins:
-// a. ecs-eni
+// a. vpc-eni
 // b. ecs-bridge
 // c. ecs-ipam
 // d. aws-appmesh
@@ -147,6 +152,18 @@ func (agent *ecsAgent) startENIWatcher(state dockerstate.TaskEngineState, stateC
 	return nil
 }
 
+func (agent *ecsAgent) startEBSWatcher(
+	state dockerstate.TaskEngineState,
+	taskEngine engine.TaskEngine,
+	dockerClient dockerapi.DockerClient,
+) {
+	if agent.ebsWatcher == nil {
+		seelog.Debug("Creating new EBS watcher...")
+		agent.ebsWatcher = ebs.NewWatcher(agent.ctx, state, taskEngine, dockerClient)
+		go agent.ebsWatcher.Start()
+	}
+}
+
 // initializeResourceFields exists mainly for testing doStart() to use mock Control
 // object
 func (agent *ecsAgent) initializeResourceFields(credentialsManager credentials.Manager) {
@@ -156,6 +173,7 @@ func (agent *ecsAgent) initializeResourceFields(credentialsManager credentials.M
 			IOUtil:             ioutilwrapper.NewIOUtil(),
 			ASMClientCreator:   asmfactory.NewClientCreator(),
 			SSMClientCreator:   ssmfactory.NewSSMClientCreator(),
+			S3ClientCreator:    s3factory.NewS3ClientCreator(),
 			CredentialsManager: credentialsManager,
 			EC2InstanceID:      agent.getEC2InstanceID(),
 		},
@@ -175,7 +193,7 @@ func (agent *ecsAgent) cgroupInit() error {
 	if agent.cfg.TaskCPUMemLimit.Value == config.ExplicitlyEnabled {
 		return errors.Wrapf(err, "unable to setup '/ecs' cgroup")
 	}
-	seelog.Warnf("Disabling TaskCPUMemLimit because agent is unabled to setup '/ecs' cgroup: %v", err)
+	seelog.Warnf("Disabling TaskCPUMemLimit because agent is unable to setup '/ecs' cgroup: %v", err)
 	agent.cfg.TaskCPUMemLimit.Value = config.ExplicitlyDisabled
 	return nil
 }

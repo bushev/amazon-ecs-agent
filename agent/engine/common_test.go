@@ -1,3 +1,6 @@
+//go:build unit || integration || sudo
+// +build unit integration sudo
+
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"). You may
@@ -25,18 +28,22 @@ import (
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
-	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
 	"github.com/aws/amazon-ecs-agent/agent/config"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient/dockerapi"
 	mock_dockerapi "github.com/aws/amazon-ecs-agent/agent/dockerclient/dockerapi/mocks"
+	"github.com/aws/amazon-ecs-agent/agent/engine/daemonmanager"
 	"github.com/aws/amazon-ecs-agent/agent/engine/execcmd"
 	mock_engine "github.com/aws/amazon-ecs-agent/agent/engine/mocks"
 	"github.com/aws/amazon-ecs-agent/agent/statechange"
-	mock_ttime "github.com/aws/amazon-ecs-agent/agent/utils/ttime/mocks"
+	"github.com/aws/amazon-ecs-agent/agent/utils"
+	apicontainerstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/container/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/model/ecs"
+	apitaskstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/task/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	mock_ttime "github.com/aws/amazon-ecs-agent/ecs-agent/utils/ttime/mocks"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/cihub/seelog"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/golang/mock/gomock"
@@ -174,6 +181,8 @@ func validateContainerRunWorkflow(t *testing.T,
 		dockerConfig.Env = append(dockerConfig.Env, "ECS_CONTAINER_METADATA_URI="+metadataEndpointEnvValue)
 		metadataEndpointEnvValueV4 := fmt.Sprintf(apicontainer.MetadataURIFormatV4, v3EndpointID)
 		dockerConfig.Env = append(dockerConfig.Env, "ECS_CONTAINER_METADATA_URI_V4="+metadataEndpointEnvValueV4)
+		agentAPIEndpointEnvValue := fmt.Sprintf(apicontainer.AgentURIFormat, v3EndpointID)
+		dockerConfig.Env = append(dockerConfig.Env, "ECS_AGENT_URI="+agentAPIEndpointEnvValue)
 	}
 	// Container config should get updated with this during CreateContainer
 	dockerConfig.Labels["com.amazonaws.ecs.task-arn"] = task.Arn
@@ -252,7 +261,6 @@ func addTaskToEngine(t *testing.T,
 
 	taskEngine.AddTask(sleepTask)
 	waitForRunningEvents(t, taskEngine.StateChangeEvents())
-
 	// Wait for all events to be consumed prior to moving it towards stopped; we
 	// don't want to race the below with these or we'll end up with the "going
 	// backwards in state" stop and we haven't 'expect'd for that
@@ -298,10 +306,10 @@ func waitForStopEvents(t *testing.T, stateChangeEvents <-chan statechange.Event,
 
 	event := <-stateChangeEvents
 	if cont := event.(api.ContainerStateChange); cont.Status != apicontainerstatus.ContainerStopped {
-		t.Fatal("Expected container to stop first")
 		if verifyExitCode {
 			assert.Equal(t, *cont.ExitCode, 1, "Exit code should be present")
 		}
+		t.Fatal("Expected container to stop first")
 	}
 	event = <-stateChangeEvents
 	assert.Equal(t, event.(api.TaskStateChange).Status, apitaskstatus.TaskStopped, "Expected task to be STOPPED")
@@ -363,4 +371,48 @@ func enableExecCommandAgentForContainer(container *apicontainer.Container, state
 			ManagedAgentState: state,
 		},
 	}
+}
+
+func getTestHostResources() map[string]*ecs.Resource {
+	hostResources := make(map[string]*ecs.Resource)
+	CPUs := int64(1024)
+	hostResources["CPU"] = &ecs.Resource{
+		Name:         utils.Strptr("CPU"),
+		Type:         utils.Strptr("INTEGER"),
+		IntegerValue: &CPUs,
+	}
+	//MEMORY
+	memory := int64(1024)
+	hostResources["MEMORY"] = &ecs.Resource{
+		Name:         utils.Strptr("MEMORY"),
+		Type:         utils.Strptr("INTEGER"),
+		IntegerValue: &memory,
+	}
+	//PORTS
+	ports_tcp := []*string{}
+	hostResources["PORTS_TCP"] = &ecs.Resource{
+		Name:           utils.Strptr("PORTS_TCP"),
+		Type:           utils.Strptr("STRINGSET"),
+		StringSetValue: ports_tcp,
+	}
+	//PORTS_UDP
+	ports_udp := []*string{}
+	hostResources["PORTS_UDP"] = &ecs.Resource{
+		Name:           utils.Strptr("PORTS_UDP"),
+		Type:           utils.Strptr("STRINGSET"),
+		StringSetValue: ports_udp,
+	}
+	//GPUs
+	gpuIDs := []string{"gpu1", "gpu2", "gpu3", "gpu4"}
+	hostResources["GPU"] = &ecs.Resource{
+		Name:           utils.Strptr("GPU"),
+		Type:           utils.Strptr("STRINGSET"),
+		StringSetValue: aws.StringSlice(gpuIDs),
+	}
+	return hostResources
+}
+
+func getTestDaemonManagers() map[string]daemonmanager.DaemonManager {
+	daemonManagers := make(map[string]daemonmanager.DaemonManager)
+	return daemonManagers
 }

@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -18,7 +19,7 @@ package v2
 import (
 	"testing"
 
-	"github.com/aws/amazon-ecs-agent/agent/stats"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/stats"
 
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	mock_dockerstate "github.com/aws/amazon-ecs-agent/agent/engine/dockerstate/mocks"

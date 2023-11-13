@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -29,16 +30,17 @@ import (
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	apieni "github.com/aws/amazon-ecs-agent/agent/api/eni"
 	mock_api "github.com/aws/amazon-ecs-agent/agent/api/mocks"
-	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
-	"github.com/aws/amazon-ecs-agent/agent/async"
-	mock_async "github.com/aws/amazon-ecs-agent/agent/async/mocks"
 	"github.com/aws/amazon-ecs-agent/agent/config"
-	"github.com/aws/amazon-ecs-agent/agent/ec2"
-	mock_ec2 "github.com/aws/amazon-ecs-agent/agent/ec2/mocks"
-	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/attachment"
+	apicontainerstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/container/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/model/ecs"
+	apitaskstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/task/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/async"
+	mock_async "github.com/aws/amazon-ecs-agent/ecs-agent/async/mocks"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/ec2"
+	mock_ec2 "github.com/aws/amazon-ecs-agent/ecs-agent/ec2/mocks"
+	ni "github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/networkinterface"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -49,6 +51,7 @@ const (
 	iid               = "instanceIdentityDocument"
 	iidSignature      = "signature"
 	registrationToken = "clientToken"
+	testNetworkName   = "bridge"
 )
 
 var (
@@ -195,6 +198,12 @@ func TestSubmitContainerStateChange(t *testing.T) {
 					HostPort:      int64ptr(intptr(4)),
 					Protocol:      strptr("udp"),
 				},
+				{
+					BindIP:             strptr("5.6.7.8"),
+					ContainerPortRange: strptr("11-12"),
+					HostPortRange:      strptr("11-12"),
+					Protocol:           strptr("udp"),
+				},
 			},
 		},
 	})
@@ -203,6 +212,18 @@ func TestSubmitContainerStateChange(t *testing.T) {
 		ContainerName: "cont",
 		RuntimeID:     "runtime id",
 		Status:        apicontainerstatus.ContainerRunning,
+		Container: &apicontainer.Container{
+			ContainerArn:          "arn",
+			NetworkModeUnsafe:     testNetworkName,
+			ContainerHasPortRange: true,
+			ContainerPortSet: map[int]struct{}{
+				1: {},
+				3: {},
+			},
+			ContainerPortRangeMap: map[string]string{
+				"11-12": "11-12",
+			},
+		},
 		PortBindings: []apicontainer.PortBinding{
 			{
 				BindIP:        "1.2.3.4",
@@ -213,6 +234,18 @@ func TestSubmitContainerStateChange(t *testing.T) {
 				BindIP:        "2.2.3.4",
 				ContainerPort: 3,
 				HostPort:      4,
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				BindIP:        "5.6.7.8",
+				ContainerPort: 11,
+				HostPort:      11,
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				BindIP:        "5.6.7.8",
+				ContainerPort: 12,
+				HostPort:      12,
 				Protocol:      apicontainer.TransportProtocolUDP,
 			},
 		},
@@ -231,21 +264,14 @@ func TestSubmitContainerStateChangeFull(t *testing.T) {
 
 	mockSubmitStateClient.EXPECT().SubmitContainerStateChange(&containerSubmitInputMatcher{
 		ecs.SubmitContainerStateChangeInput{
-			Cluster:       strptr(configuredCluster),
-			Task:          strptr("arn"),
-			ContainerName: strptr("cont"),
-			RuntimeId:     strptr("runtime id"),
-			Status:        strptr("STOPPED"),
-			ExitCode:      int64ptr(&exitCode),
-			Reason:        strptr(reason),
-			NetworkBindings: []*ecs.NetworkBinding{
-				{
-					BindIP:        strptr(""),
-					ContainerPort: int64ptr(intptr(0)),
-					HostPort:      int64ptr(intptr(0)),
-					Protocol:      strptr("tcp"),
-				},
-			},
+			Cluster:         strptr(configuredCluster),
+			Task:            strptr("arn"),
+			ContainerName:   strptr("cont"),
+			RuntimeId:       strptr("runtime id"),
+			Status:          strptr("STOPPED"),
+			ExitCode:        int64ptr(&exitCode),
+			Reason:          strptr(reason),
+			NetworkBindings: []*ecs.NetworkBinding{},
 		},
 	})
 	err := client.SubmitContainerStateChange(api.ContainerStateChange{
@@ -255,6 +281,9 @@ func TestSubmitContainerStateChangeFull(t *testing.T) {
 		Status:        apicontainerstatus.ContainerStopped,
 		ExitCode:      &exitCode,
 		Reason:        reason,
+		Container: &apicontainer.Container{
+			NetworkModeUnsafe: testNetworkName,
+		},
 		PortBindings: []apicontainer.PortBinding{
 			{},
 		},
@@ -269,7 +298,7 @@ func TestSubmitContainerStateChangeReason(t *testing.T) {
 	defer mockCtrl.Finish()
 	client, _, mockSubmitStateClient := NewMockClient(mockCtrl, ec2.NewBlackholeEC2MetadataClient(), nil)
 	exitCode := 20
-	reason := strings.Repeat("a", ecsMaxReasonLength)
+	reason := strings.Repeat("a", ecsMaxContainerReasonLength)
 
 	mockSubmitStateClient.EXPECT().SubmitContainerStateChange(&containerSubmitInputMatcher{
 		ecs.SubmitContainerStateChangeInput{
@@ -285,9 +314,12 @@ func TestSubmitContainerStateChangeReason(t *testing.T) {
 	err := client.SubmitContainerStateChange(api.ContainerStateChange{
 		TaskArn:       "arn",
 		ContainerName: "cont",
-		Status:        apicontainerstatus.ContainerStopped,
-		ExitCode:      &exitCode,
-		Reason:        reason,
+		Container: &apicontainer.Container{
+			NetworkModeUnsafe: testNetworkName,
+		},
+		Status:   apicontainerstatus.ContainerStopped,
+		ExitCode: &exitCode,
+		Reason:   reason,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -299,8 +331,8 @@ func TestSubmitContainerStateChangeLongReason(t *testing.T) {
 	defer mockCtrl.Finish()
 	client, _, mockSubmitStateClient := NewMockClient(mockCtrl, ec2.NewBlackholeEC2MetadataClient(), nil)
 	exitCode := 20
-	trimmedReason := strings.Repeat("a", ecsMaxReasonLength)
-	reason := strings.Repeat("a", ecsMaxReasonLength+1)
+	trimmedReason := strings.Repeat("a", ecsMaxContainerReasonLength)
+	reason := strings.Repeat("a", ecsMaxContainerReasonLength+1)
 
 	mockSubmitStateClient.EXPECT().SubmitContainerStateChange(&containerSubmitInputMatcher{
 		ecs.SubmitContainerStateChangeInput{
@@ -316,9 +348,12 @@ func TestSubmitContainerStateChangeLongReason(t *testing.T) {
 	err := client.SubmitContainerStateChange(api.ContainerStateChange{
 		TaskArn:       "arn",
 		ContainerName: "cont",
-		Status:        apicontainerstatus.ContainerStopped,
-		ExitCode:      &exitCode,
-		Reason:        reason,
+		Container: &apicontainer.Container{
+			NetworkModeUnsafe: testNetworkName,
+		},
+		Status:   apicontainerstatus.ContainerStopped,
+		ExitCode: &exitCode,
+		Reason:   reason,
 	})
 	if err != nil {
 		t.Errorf("Unable to submit container state change: %v", err)
@@ -341,6 +376,13 @@ func TestRegisterContainerInstance(t *testing.T) {
 		name string
 		cfg  *config.Config
 	}{
+		{
+			name: "retry GetDynamicData",
+			cfg: &config.Config{
+				Cluster:   configuredCluster,
+				AWSRegion: "us-west-2",
+			},
+		},
 		{
 			name: "basic case",
 			cfg: &config.Config{
@@ -409,7 +451,14 @@ func TestRegisterContainerInstance(t *testing.T) {
 			if tc.cfg.NoIID {
 				expectedIID = ""
 				expectedIIDSig = ""
+			} else if tc.name == "retry GetDynamicData" {
+				gomock.InOrder(
+					mockEC2Metadata.EXPECT().GetDynamicData(ec2.InstanceIdentityDocumentResource).Return("", errors.New("fake unit test error")),
+					mockEC2Metadata.EXPECT().GetDynamicData(ec2.InstanceIdentityDocumentResource).Return(expectedIID, nil),
+					mockEC2Metadata.EXPECT().GetDynamicData(ec2.InstanceIdentityDocumentSignatureResource).Return(expectedIIDSig, nil),
+				)
 			} else {
+				//basic case
 				gomock.InOrder(
 					mockEC2Metadata.EXPECT().GetDynamicData(ec2.InstanceIdentityDocumentResource).Return(expectedIID, nil),
 					mockEC2Metadata.EXPECT().GetDynamicData(ec2.InstanceIdentityDocumentSignatureResource).Return(expectedIIDSig, nil),
@@ -769,6 +818,44 @@ func TestDiscoverNilTelemetryEndpoint(t *testing.T) {
 	}
 }
 
+func TestDiscoverServiceConnectEndpoint(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+	client, mc, _ := NewMockClient(mockCtrl, ec2.NewBlackholeEC2MetadataClient(), nil)
+	expectedEndpoint := "http://127.0.0.1"
+	mc.EXPECT().DiscoverPollEndpoint(gomock.Any()).Return(&ecs.DiscoverPollEndpointOutput{ServiceConnectEndpoint: &expectedEndpoint}, nil)
+	endpoint, err := client.DiscoverServiceConnectEndpoint("containerInstance")
+	if err != nil {
+		t.Error("Error getting service connect endpoint: ", err)
+	}
+	if expectedEndpoint != endpoint {
+		t.Errorf("Expected telemetry endpoint(%s) != endpoint(%s)", expectedEndpoint, endpoint)
+	}
+}
+
+func TestDiscoverServiceConnectEndpointError(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+	client, mc, _ := NewMockClient(mockCtrl, ec2.NewBlackholeEC2MetadataClient(), nil)
+	mc.EXPECT().DiscoverPollEndpoint(gomock.Any()).Return(nil, fmt.Errorf("Error getting endpoint"))
+	_, err := client.DiscoverServiceConnectEndpoint("containerInstance")
+	if err == nil {
+		t.Error("Expected error getting service connect endpoint, didn't get any")
+	}
+}
+
+func TestDiscoverNilServiceConnectEndpoint(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+	client, mc, _ := NewMockClient(mockCtrl, ec2.NewBlackholeEC2MetadataClient(), nil)
+	pollEndpoint := "http://127.0.0.1"
+	mc.EXPECT().DiscoverPollEndpoint(gomock.Any()).Return(&ecs.DiscoverPollEndpointOutput{Endpoint: &pollEndpoint}, nil)
+	_, err := client.DiscoverServiceConnectEndpoint("containerInstance")
+	if err == nil {
+		t.Error("Expected error getting service connect endpoint with old response")
+	}
+}
+
 func TestUpdateContainerInstancesState(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
@@ -838,23 +925,23 @@ func TestDiscoverPollEndpointCacheHit(t *testing.T) {
 	defer mockCtrl.Finish()
 
 	mockSDK := mock_api.NewMockECSSDK(mockCtrl)
-	pollEndpoinCache := mock_async.NewMockCache(mockCtrl)
+	pollEndpointCache := mock_async.NewMockTTLCache(mockCtrl)
 	client := &APIECSClient{
 		credentialProvider: credentials.AnonymousCredentials,
 		config: &config.Config{
 			Cluster:   configuredCluster,
 			AWSRegion: "us-east-1",
 		},
-		standardClient:   mockSDK,
-		ec2metadata:      ec2.NewBlackholeEC2MetadataClient(),
-		pollEndpoinCache: pollEndpoinCache,
+		standardClient:    mockSDK,
+		ec2metadata:       ec2.NewBlackholeEC2MetadataClient(),
+		pollEndpointCache: pollEndpointCache,
 	}
 
 	pollEndpoint := "http://127.0.0.1"
-	pollEndpoinCache.EXPECT().Get("containerInstance").Return(
+	pollEndpointCache.EXPECT().Get("containerInstance").Return(
 		&ecs.DiscoverPollEndpointOutput{
 			Endpoint: aws.String(pollEndpoint),
-		}, true)
+		}, false, true)
 	output, err := client.discoverPollEndpoint("containerInstance")
 	if err != nil {
 		t.Fatalf("Error in discoverPollEndpoint: %v", err)
@@ -869,16 +956,16 @@ func TestDiscoverPollEndpointCacheMiss(t *testing.T) {
 	defer mockCtrl.Finish()
 
 	mockSDK := mock_api.NewMockECSSDK(mockCtrl)
-	pollEndpoinCache := mock_async.NewMockCache(mockCtrl)
+	pollEndpointCache := mock_async.NewMockTTLCache(mockCtrl)
 	client := &APIECSClient{
 		credentialProvider: credentials.AnonymousCredentials,
 		config: &config.Config{
 			Cluster:   configuredCluster,
 			AWSRegion: "us-east-1",
 		},
-		standardClient:   mockSDK,
-		ec2metadata:      ec2.NewBlackholeEC2MetadataClient(),
-		pollEndpoinCache: pollEndpoinCache,
+		standardClient:    mockSDK,
+		ec2metadata:       ec2.NewBlackholeEC2MetadataClient(),
+		pollEndpointCache: pollEndpointCache,
 	}
 	pollEndpoint := "http://127.0.0.1"
 	pollEndpointOutput := &ecs.DiscoverPollEndpointOutput{
@@ -886,9 +973,44 @@ func TestDiscoverPollEndpointCacheMiss(t *testing.T) {
 	}
 
 	gomock.InOrder(
-		pollEndpoinCache.EXPECT().Get("containerInstance").Return(nil, false),
+		pollEndpointCache.EXPECT().Get("containerInstance").Return(nil, false, false),
 		mockSDK.EXPECT().DiscoverPollEndpoint(gomock.Any()).Return(pollEndpointOutput, nil),
-		pollEndpoinCache.EXPECT().Set("containerInstance", pollEndpointOutput),
+		pollEndpointCache.EXPECT().Set("containerInstance", pollEndpointOutput),
+	)
+
+	output, err := client.discoverPollEndpoint("containerInstance")
+	if err != nil {
+		t.Fatalf("Error in discoverPollEndpoint: %v", err)
+	}
+	if aws.StringValue(output.Endpoint) != pollEndpoint {
+		t.Errorf("Mismatch in poll endpoint: %s != %s", aws.StringValue(output.Endpoint), pollEndpoint)
+	}
+}
+
+func TestDiscoverPollEndpointExpiredButDPEFailed(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	defer mockCtrl.Finish()
+
+	mockSDK := mock_api.NewMockECSSDK(mockCtrl)
+	pollEndpointCache := mock_async.NewMockTTLCache(mockCtrl)
+	client := &APIECSClient{
+		credentialProvider: credentials.AnonymousCredentials,
+		config: &config.Config{
+			Cluster:   configuredCluster,
+			AWSRegion: "us-east-1",
+		},
+		standardClient:    mockSDK,
+		ec2metadata:       ec2.NewBlackholeEC2MetadataClient(),
+		pollEndpointCache: pollEndpointCache,
+	}
+	pollEndpoint := "http://127.0.0.1"
+	pollEndpointOutput := &ecs.DiscoverPollEndpointOutput{
+		Endpoint: &pollEndpoint,
+	}
+
+	gomock.InOrder(
+		pollEndpointCache.EXPECT().Get("containerInstance").Return(pollEndpointOutput, true, false),
+		mockSDK.EXPECT().DiscoverPollEndpoint(gomock.Any()).Return(nil, fmt.Errorf("error!")),
 	)
 
 	output, err := client.discoverPollEndpoint("containerInstance")
@@ -905,16 +1027,16 @@ func TestDiscoverTelemetryEndpointAfterPollEndpointCacheHit(t *testing.T) {
 	defer mockCtrl.Finish()
 
 	mockSDK := mock_api.NewMockECSSDK(mockCtrl)
-	pollEndpoinCache := async.NewLRUCache(1, 10*time.Minute)
+	pollEndpointCache := async.NewTTLCache(&async.TTL{Duration: 10 * time.Minute})
 	client := &APIECSClient{
 		credentialProvider: credentials.AnonymousCredentials,
 		config: &config.Config{
 			Cluster:   configuredCluster,
 			AWSRegion: "us-east-1",
 		},
-		standardClient:   mockSDK,
-		ec2metadata:      ec2.NewBlackholeEC2MetadataClient(),
-		pollEndpoinCache: pollEndpoinCache,
+		standardClient:    mockSDK,
+		ec2metadata:       ec2.NewBlackholeEC2MetadataClient(),
+		pollEndpointCache: pollEndpointCache,
 	}
 
 	pollEndpoint := "http://127.0.0.1"
@@ -939,9 +1061,9 @@ func TestDiscoverTelemetryEndpointAfterPollEndpointCacheHit(t *testing.T) {
 	}
 }
 
-// TestSubmitTaskStateChangeWithAttachments tests the SubmitTaskStateChange API
+// TestSubmitTaskStateChangeWithENIAttachments tests the SubmitTaskStateChange API
 // also send the Attachment Status
-func TestSubmitTaskStateChangeWithAttachments(t *testing.T) {
+func TestSubmitTaskStateChangeWithENIAttachments(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	defer mockCtrl.Finish()
 
@@ -961,9 +1083,11 @@ func TestSubmitTaskStateChangeWithAttachments(t *testing.T) {
 
 	err := client.SubmitTaskStateChange(api.TaskStateChange{
 		TaskARN: "task_arn",
-		Attachment: &apieni.ENIAttachment{
-			AttachmentARN: "eni_arn",
-			Status:        apieni.ENIAttached,
+		Attachment: &ni.ENIAttachment{
+			AttachmentInfo: attachment.AttachmentInfo{
+				AttachmentARN: "eni_arn",
+				Status:        attachment.AttachmentAttached,
+			},
 		},
 	})
 	assert.NoError(t, err, "Unable to submit task state change with attachments")
@@ -1040,7 +1164,10 @@ func TestSubmitContainerStateChangeWhileTaskInPending(t *testing.T) {
 				TaskArn:       "arn",
 				ContainerName: "container",
 				RuntimeID:     "runtimeid",
-				Status:        apicontainerstatus.ContainerRunning,
+				Container: &apicontainer.Container{
+					NetworkModeUnsafe: testNetworkName,
+				},
+				Status: apicontainerstatus.ContainerRunning,
 			},
 		},
 	}
@@ -1077,4 +1204,137 @@ func extractTagsMapFromRegisterContainerInstanceInput(req *ecs.RegisterContainer
 		tagsMap[aws.StringValue(req.Tags[i].Key)] = aws.StringValue(req.Tags[i].Value)
 	}
 	return tagsMap
+}
+
+func getTestContainerStateChange() api.ContainerStateChange {
+	testContainer := &apicontainer.Container{
+		Name:              "cont",
+		NetworkModeUnsafe: testNetworkName,
+		Ports: []apicontainer.PortBinding{
+			{
+				ContainerPort: 10,
+				HostPort:      10,
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+			{
+				ContainerPort: 12,
+				HostPort:      12,
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				ContainerPort: 15,
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+			{
+				ContainerPortRange: "21-22",
+				Protocol:           apicontainer.TransportProtocolUDP,
+			},
+			{
+				ContainerPortRange: "96-97",
+				Protocol:           apicontainer.TransportProtocolTCP,
+			},
+		},
+		ContainerHasPortRange: true,
+		ContainerPortSet: map[int]struct{}{
+			10: {},
+			12: {},
+			15: {},
+		},
+		ContainerPortRangeMap: map[string]string{
+			"21-22": "60001-60002",
+			"96-97": "47001-47002",
+		},
+	}
+
+	testContainerStateChange := api.ContainerStateChange{
+		TaskArn:       "arn",
+		ContainerName: "cont",
+		Status:        apicontainerstatus.ContainerRunning,
+		Container:     testContainer,
+		PortBindings: []apicontainer.PortBinding{
+			{
+				ContainerPort: 10,
+				HostPort:      10,
+				BindIP:        "0.0.0.0",
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+			{
+				ContainerPort: 12,
+				HostPort:      12,
+				BindIP:        "1.2.3.4",
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				ContainerPort: 15,
+				HostPort:      20,
+				BindIP:        "5.6.7.8",
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+			{
+				ContainerPort: 21,
+				HostPort:      60001,
+				BindIP:        "::",
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				ContainerPort: 22,
+				HostPort:      60002,
+				BindIP:        "::",
+				Protocol:      apicontainer.TransportProtocolUDP,
+			},
+			{
+				ContainerPort: 96,
+				HostPort:      47001,
+				BindIP:        "0.0.0.0",
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+			{
+				ContainerPort: 97,
+				HostPort:      47002,
+				BindIP:        "0.0.0.0",
+				Protocol:      apicontainer.TransportProtocolTCP,
+			},
+		},
+	}
+
+	return testContainerStateChange
+}
+
+func TestGetNetworkBindings(t *testing.T) {
+	testContainerStateChange := getTestContainerStateChange()
+	expectedNetworkBindings := []*ecs.NetworkBinding{
+		{
+			BindIP:        strptr("0.0.0.0"),
+			ContainerPort: int64ptr(intptr(10)),
+			HostPort:      int64ptr(intptr(10)),
+			Protocol:      strptr("tcp"),
+		},
+		{
+			BindIP:        strptr("1.2.3.4"),
+			ContainerPort: int64ptr(intptr(12)),
+			HostPort:      int64ptr(intptr(12)),
+			Protocol:      strptr("udp"),
+		},
+		{
+			BindIP:        strptr("5.6.7.8"),
+			ContainerPort: int64ptr(intptr(15)),
+			HostPort:      int64ptr(intptr(20)),
+			Protocol:      strptr("tcp"),
+		},
+		{
+			BindIP:             strptr("::"),
+			ContainerPortRange: strptr("21-22"),
+			HostPortRange:      strptr("60001-60002"),
+			Protocol:           strptr("udp"),
+		},
+		{
+			BindIP:             strptr("0.0.0.0"),
+			ContainerPortRange: strptr("96-97"),
+			HostPortRange:      strptr("47001-47002"),
+			Protocol:           strptr("tcp"),
+		},
+	}
+
+	networkBindings := getNetworkBindings(testContainerStateChange, false)
+	assert.ElementsMatch(t, expectedNetworkBindings, networkBindings)
 }

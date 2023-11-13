@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -28,8 +29,7 @@ const (
 )
 
 func TestManageMetadata(t *testing.T) {
-	testClient, cleanup := newTestClient(t)
-	defer cleanup()
+	testClient := newTestClient(t)
 
 	require.NoError(t, testClient.SaveMetadata(testKey, testVal))
 

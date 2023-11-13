@@ -14,6 +14,7 @@
 package ecsclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -21,32 +22,48 @@ import (
 	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
-	"github.com/aws/amazon-ecs-agent/agent/async"
 	"github.com/aws/amazon-ecs-agent/agent/config"
-	"github.com/aws/amazon-ecs-agent/agent/ec2"
-	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
-	"github.com/aws/amazon-ecs-agent/agent/httpclient"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
+	agentversion "github.com/aws/amazon-ecs-agent/agent/version"
+	apicontainerstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/container/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/ecs/model/ecs"
+	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/async"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials/instancecreds"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/ec2"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/httpclient"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
+	commonutils "github.com/aws/amazon-ecs-agent/ecs-agent/utils"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/retry"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/cihub/seelog"
 	"github.com/docker/docker/pkg/system"
+	"github.com/docker/go-connections/nat"
 )
 
 const (
-	ecsMaxImageDigestLength = 255
-	ecsMaxReasonLength      = 255
-	ecsMaxRuntimeIDLength   = 255
-	pollEndpointCacheSize   = 1
-	pollEndpointCacheTTL    = 20 * time.Minute
-	roundtripTimeout        = 5 * time.Second
-	azAttrName              = "ecs.availability-zone"
-	cpuArchAttrName         = "ecs.cpu-architecture"
-	osTypeAttrName          = "ecs.os-type"
-	osFamilyAttrName        = "ecs.os-family"
+	ecsMaxImageDigestLength     = 255
+	ecsMaxContainerReasonLength = 255
+	ecsMaxTaskReasonLength      = 1024
+	ecsMaxRuntimeIDLength       = 255
+	pollEndpointCacheTTL        = 12 * time.Hour
+	azAttrName                  = "ecs.availability-zone"
+	cpuArchAttrName             = "ecs.cpu-architecture"
+	osTypeAttrName              = "ecs.os-type"
+	osFamilyAttrName            = "ecs.os-family"
+	RoundtripTimeout            = 5 * time.Second
+	// ecsMaxNetworkBindingsLength is the maximum length of the ecs.NetworkBindings list sent as part of the
+	// container state change payload. Currently, this is enforced only when containerPortRanges are requested.
+	ecsMaxNetworkBindingsLength = 100
+	// Following constants used for SetInstanceIdentity retry with exponential backoff
+	setInstanceIdRetryTimeOut         = 30 * time.Second
+	setInstanceIdRetryBackoffMin      = 100 * time.Millisecond
+	setInstanceIdRetryBackoffMax      = 5 * time.Second
+	setInstanceIdRetryBackoffJitter   = 0.2
+	setInstanceIdRetryBackoffMultiple = 2
 )
 
 // APIECSClient implements ECSClient
@@ -56,32 +73,31 @@ type APIECSClient struct {
 	standardClient          api.ECSSDK
 	submitStateChangeClient api.ECSSubmitStateSDK
 	ec2metadata             ec2.EC2MetadataClient
-	pollEndpoinCache        async.Cache
+	pollEndpointCache       async.TTLCache
 }
 
 // NewECSClient creates a new ECSClient interface object
 func NewECSClient(
 	credentialProvider *credentials.Credentials,
-	config *config.Config,
+	cfg *config.Config,
 	ec2MetadataClient ec2.EC2MetadataClient) api.ECSClient {
 
 	var ecsConfig aws.Config
 	ecsConfig.Credentials = credentialProvider
-	ecsConfig.Region = &config.AWSRegion
-	ecsConfig.HTTPClient = httpclient.New(roundtripTimeout, config.AcceptInsecureCert)
-	if config.APIEndpoint != "" {
-		ecsConfig.Endpoint = &config.APIEndpoint
+	ecsConfig.Region = &cfg.AWSRegion
+	ecsConfig.HTTPClient = httpclient.New(RoundtripTimeout, cfg.AcceptInsecureCert, agentversion.String(), config.OSType)
+	if cfg.APIEndpoint != "" {
+		ecsConfig.Endpoint = &cfg.APIEndpoint
 	}
 	standardClient := ecs.New(session.New(&ecsConfig))
 	submitStateChangeClient := newSubmitStateChangeClient(&ecsConfig)
-	pollEndpoinCache := async.NewLRUCache(pollEndpointCacheSize, pollEndpointCacheTTL)
 	return &APIECSClient{
 		credentialProvider:      credentialProvider,
-		config:                  config,
+		config:                  cfg,
 		standardClient:          standardClient,
 		submitStateChangeClient: submitStateChangeClient,
 		ec2metadata:             ec2MetadataClient,
-		pollEndpoinCache:        pollEndpoinCache,
+		pollEndpointCache:       async.NewTTLCache(&async.TTL{Duration: pollEndpointCacheTTL}),
 	}
 }
 
@@ -221,7 +237,24 @@ func (client *APIECSClient) setInstanceIdentity(registerRequest ecs.RegisterCont
 	}
 
 	iidRetrieved := true
-	instanceIdentityDoc, err := client.ec2metadata.GetDynamicData(ec2.InstanceIdentityDocumentResource)
+	backoff := retry.NewExponentialBackoff(setInstanceIdRetryBackoffMin, setInstanceIdRetryBackoffMax,
+		setInstanceIdRetryBackoffJitter, setInstanceIdRetryBackoffMultiple)
+	ctx, cancel := context.WithTimeout(context.Background(), setInstanceIdRetryTimeOut)
+	defer cancel()
+	err := retry.RetryWithBackoffCtx(ctx, backoff, func() error {
+		var attemptErr error
+		seelog.Debugf("Attempting to get Instance Identity Document")
+		instanceIdentityDoc, attemptErr = client.ec2metadata.GetDynamicData(ec2.InstanceIdentityDocumentResource)
+		if attemptErr != nil {
+			seelog.Debugf("Unable to get instance identity document, retrying: %v", attemptErr)
+			// force credentials to expire in case they are stale but not expired
+			client.credentialProvider.Expire()
+			client.credentialProvider = instancecreds.GetCredentials(client.config.External.Enabled())
+			return apierrors.NewRetriableError(apierrors.NewRetriable(true), attemptErr)
+		}
+		seelog.Debugf("Successfully retrieved Instance Identity Document")
+		return nil
+	})
 	if err != nil {
 		seelog.Errorf("Unable to get instance identity document: %v", err)
 		iidRetrieved = false
@@ -290,15 +323,33 @@ func (client *APIECSClient) getResources() ([]*ecs.Resource, error) {
 	portResource := ecs.Resource{
 		Name:           utils.Strptr("PORTS"),
 		Type:           utils.Strptr("STRINGSET"),
-		StringSetValue: utils.Uint16SliceToStringSlice(client.config.ReservedPorts),
+		StringSetValue: commonutils.Uint16SliceToStringSlice(client.config.ReservedPorts),
 	}
 	udpPortResource := ecs.Resource{
 		Name:           utils.Strptr("PORTS_UDP"),
 		Type:           utils.Strptr("STRINGSET"),
-		StringSetValue: utils.Uint16SliceToStringSlice(client.config.ReservedPortsUDP),
+		StringSetValue: commonutils.Uint16SliceToStringSlice(client.config.ReservedPortsUDP),
 	}
 
 	return []*ecs.Resource{&cpuResource, &memResource, &portResource, &udpPortResource}, nil
+}
+
+// GetHostResources calling getHostResources to get a list of CPU, MEMORY, PORTS and PORTS_UPD resources
+// and return a resourceMap that map the resource name to each resource
+func (client *APIECSClient) GetHostResources() (map[string]*ecs.Resource, error) {
+	resources, err := client.getResources()
+	if err != nil {
+		return nil, err
+	}
+	resourceMap := make(map[string]*ecs.Resource)
+	for _, resource := range resources {
+		if *resource.Name == "PORTS" {
+			// Except for RCI, TCP Ports are named as PORTS_TCP in agent for Host Resources purpose
+			resource.Name = utils.Strptr("PORTS_TCP")
+		}
+		resourceMap[*resource.Name] = resource
+	}
+	return resourceMap, nil
 }
 
 func getCpuAndMemory() (int64, int64) {
@@ -404,7 +455,7 @@ func (client *APIECSClient) SubmitTaskStateChange(change api.TaskStateChange) er
 		Cluster:            aws.String(client.config.Cluster),
 		Task:               aws.String(change.TaskARN),
 		Status:             aws.String(status),
-		Reason:             aws.String(change.Reason),
+		Reason:             aws.String(trimString(change.Reason, ecsMaxTaskReasonLength)),
 		PullStartedAt:      change.PullStartedAt,
 		PullStoppedAt:      change.PullStoppedAt,
 		ExecutionStoppedAt: change.ExecutionStoppedAt,
@@ -418,7 +469,12 @@ func (client *APIECSClient) SubmitTaskStateChange(change api.TaskStateChange) er
 
 	containerEvents := make([]*ecs.ContainerStateChange, len(change.Containers))
 	for i, containerEvent := range change.Containers {
-		containerEvents[i] = client.buildContainerStateChangePayload(containerEvent, client.config.ShouldExcludeIPv6PortBinding.Enabled())
+		payload, err := client.buildContainerStateChangePayload(containerEvent, client.config.ShouldExcludeIPv6PortBinding.Enabled())
+		if err != nil {
+			seelog.Errorf("Could not submit task state change: [%s]: %v", change.String(), err)
+			return err
+		}
+		containerEvents[i] = payload
 	}
 
 	req.Containers = containerEvents
@@ -449,7 +505,7 @@ func (client *APIECSClient) buildManagedAgentStateChangePayload(change api.Manag
 	}
 	var trimmedReason *string
 	if change.Reason != "" {
-		trimmedReason = aws.String(trimString(change.Reason, ecsMaxReasonLength))
+		trimmedReason = aws.String(trimString(change.Reason, ecsMaxContainerReasonLength))
 	}
 	return &ecs.ManagedAgentStateChange{
 		ManagedAgentName: aws.String(change.Name),
@@ -459,7 +515,7 @@ func (client *APIECSClient) buildManagedAgentStateChangePayload(change api.Manag
 	}
 }
 
-func (client *APIECSClient) buildContainerStateChangePayload(change api.ContainerStateChange, shouldExcludeIPv6PortBinding bool) *ecs.ContainerStateChange {
+func (client *APIECSClient) buildContainerStateChangePayload(change api.ContainerStateChange, shouldExcludeIPv6PortBinding bool) (*ecs.ContainerStateChange, error) {
 	statechange := &ecs.ContainerStateChange{
 		ContainerName: aws.String(change.ContainerName),
 	}
@@ -468,7 +524,7 @@ func (client *APIECSClient) buildContainerStateChangePayload(change api.Containe
 		statechange.RuntimeId = aws.String(trimmedRuntimeID)
 	}
 	if change.Reason != "" {
-		trimmedReason := trimString(change.Reason, ecsMaxReasonLength)
+		trimmedReason := trimString(change.Reason, ecsMaxContainerReasonLength)
 		statechange.Reason = aws.String(trimmedReason)
 	}
 	if change.ImageDigest != "" {
@@ -480,7 +536,7 @@ func (client *APIECSClient) buildContainerStateChangePayload(change api.Containe
 	if status != apicontainerstatus.ContainerStopped && status != apicontainerstatus.ContainerRunning {
 		seelog.Warnf("Not submitting unsupported upstream container state %s for container %s in task %s",
 			status.String(), change.ContainerName, change.TaskArn)
-		return nil
+		return nil, nil
 	}
 	stat := change.Status.String()
 	if stat == "DEAD" {
@@ -493,7 +549,38 @@ func (client *APIECSClient) buildContainerStateChangePayload(change api.Containe
 		statechange.ExitCode = aws.Int64(exitCode)
 	}
 
+	networkBindings := getNetworkBindings(change, shouldExcludeIPv6PortBinding)
+	// we enforce a limit on the no. of network bindings for containers with at-least 1 port range requested.
+	// this limit is enforced by ECS, and we fail early and don't call SubmitContainerStateChange.
+	if change.Container.HasPortRange() && len(networkBindings) > ecsMaxNetworkBindingsLength {
+		return nil, fmt.Errorf("no. of network bindings %v is more than the maximum supported no. %v, "+
+			"container: %s "+"task: %s", len(networkBindings), ecsMaxNetworkBindingsLength, change.ContainerName, change.TaskArn)
+	}
+	statechange.NetworkBindings = networkBindings
+
+	return statechange, nil
+}
+
+// ProtocolBindIP used to store protocol and bindIP information associated to a particular host port
+type ProtocolBindIP struct {
+	protocol string
+	bindIP   string
+}
+
+// getNetworkBindings returns the list of networkingBindings, sent to ECS as part of the container state change payload
+func getNetworkBindings(change api.ContainerStateChange, shouldExcludeIPv6PortBinding bool) []*ecs.NetworkBinding {
 	networkBindings := []*ecs.NetworkBinding{}
+	// hostPortToProtocolBindIPMap is a map to store protocol and bindIP information associated to host ports
+	// that belong to a range. This is used in case when there are multiple protocol/bindIP combinations associated to a
+	// port binding. example: when both IPv4 and IPv6 bindIPs are populated by docker and shouldExcludeIPv6PortBinding is false.
+	hostPortToProtocolBindIPMap := map[int64][]ProtocolBindIP{}
+
+	// ContainerPortSet consists of singular ports, and ports that belong to a range, but for which we were not able to
+	// find contiguous host ports and ask docker to pick instead.
+	containerPortSet := change.Container.GetContainerPortSet()
+	// each entry in the ContainerPortRangeMap implies that we found a contiguous host port range for the same
+	containerPortRangeMap := change.Container.GetContainerPortRangeMap()
+
 	for _, binding := range change.PortBindings {
 		if binding.BindIP == "::" && shouldExcludeIPv6PortBinding {
 			seelog.Debugf("Exclude IPv6 port binding %v for container %s in task %s", binding, change.ContainerName, change.TaskArn)
@@ -505,24 +592,54 @@ func (client *APIECSClient) buildContainerStateChangePayload(change api.Containe
 		bindIP := binding.BindIP
 		protocol := binding.Protocol.String()
 
-		networkBindings = append(networkBindings, &ecs.NetworkBinding{
-			BindIP:        aws.String(bindIP),
-			ContainerPort: aws.Int64(containerPort),
-			HostPort:      aws.Int64(hostPort),
-			Protocol:      aws.String(protocol),
-		})
+		// create network binding for each containerPort that exists in the singular ContainerPortSet
+		// for container ports that belong to a range, we'll have 1 consolidated network binding for the range
+		if _, ok := containerPortSet[int(containerPort)]; ok {
+			networkBindings = append(networkBindings, &ecs.NetworkBinding{
+				BindIP:        aws.String(bindIP),
+				ContainerPort: aws.Int64(containerPort),
+				HostPort:      aws.Int64(hostPort),
+				Protocol:      aws.String(protocol),
+			})
+		} else {
+			// populate hostPortToProtocolBindIPMap – this is used below when we construct network binding for ranges.
+			hostPortToProtocolBindIPMap[hostPort] = append(hostPortToProtocolBindIPMap[hostPort],
+				ProtocolBindIP{
+					protocol: protocol,
+					bindIP:   bindIP,
+				})
+		}
 	}
-	statechange.NetworkBindings = networkBindings
 
-	return statechange
+	for containerPortRange, hostPortRange := range containerPortRangeMap {
+		// we check for protocol and bindIP information associated to any one of the host ports from the hostPortRange,
+		// all ports belonging to the same range share this information.
+		hostPort, _, _ := nat.ParsePortRangeToInt(hostPortRange)
+		if val, ok := hostPortToProtocolBindIPMap[int64(hostPort)]; ok {
+			for _, v := range val {
+				networkBindings = append(networkBindings, &ecs.NetworkBinding{
+					BindIP:             aws.String(v.bindIP),
+					ContainerPortRange: aws.String(containerPortRange),
+					HostPortRange:      aws.String(hostPortRange),
+					Protocol:           aws.String(v.protocol),
+				})
+			}
+		}
+	}
+
+	return networkBindings
 }
 
 func (client *APIECSClient) SubmitContainerStateChange(change api.ContainerStateChange) error {
-	pl := client.buildContainerStateChangePayload(change, client.config.ShouldExcludeIPv6PortBinding.Enabled())
-	if pl == nil {
+	pl, err := client.buildContainerStateChangePayload(change, client.config.ShouldExcludeIPv6PortBinding.Enabled())
+	if err != nil {
+		seelog.Errorf("Could not build container state change payload: [%s]: %v", change.String(), err)
+		return err
+	} else if pl == nil {
 		return nil
 	}
-	_, err := client.submitStateChangeClient.SubmitContainerStateChange(&ecs.SubmitContainerStateChangeInput{
+
+	_, err = client.submitStateChangeClient.SubmitContainerStateChange(&ecs.SubmitContainerStateChangeInput{
 		Cluster:         aws.String(client.config.Cluster),
 		ContainerName:   aws.String(change.ContainerName),
 		ExitCode:        pl.ExitCode,
@@ -541,14 +658,14 @@ func (client *APIECSClient) SubmitContainerStateChange(change api.ContainerState
 }
 
 func (client *APIECSClient) SubmitAttachmentStateChange(change api.AttachmentStateChange) error {
-	attachmentStatus := change.Attachment.Status.String()
+	attachmentStatus := change.Attachment.GetAttachmentStatus()
 
 	req := ecs.SubmitAttachmentStateChangesInput{
 		Cluster: &client.config.Cluster,
 		Attachments: []*ecs.AttachmentStateChange{
 			{
-				AttachmentArn: aws.String(change.Attachment.AttachmentARN),
-				Status:        aws.String(attachmentStatus),
+				AttachmentArn: aws.String(change.Attachment.GetAttachmentARN()),
+				Status:        aws.String(attachmentStatus.String()),
 			},
 		},
 	}
@@ -583,28 +700,59 @@ func (client *APIECSClient) DiscoverTelemetryEndpoint(containerInstanceArn strin
 	return aws.StringValue(resp.TelemetryEndpoint), nil
 }
 
+func (client *APIECSClient) DiscoverServiceConnectEndpoint(containerInstanceArn string) (string, error) {
+	resp, err := client.discoverPollEndpoint(containerInstanceArn)
+	if err != nil {
+		return "", err
+	}
+	if resp.ServiceConnectEndpoint == nil {
+		return "", errors.New("No ServiceConnect endpoint returned; nil")
+	}
+
+	return aws.StringValue(resp.ServiceConnectEndpoint), nil
+}
+
 func (client *APIECSClient) discoverPollEndpoint(containerInstanceArn string) (*ecs.DiscoverPollEndpointOutput, error) {
 	// Try getting an entry from the cache
-	cachedEndpoint, found := client.pollEndpoinCache.Get(containerInstanceArn)
-	if found {
-		// Cache hit. Return the output.
+	cachedEndpoint, expired, found := client.pollEndpointCache.Get(containerInstanceArn)
+	if !expired && found {
+		// Cache hit and not expired. Return the output.
 		if output, ok := cachedEndpoint.(*ecs.DiscoverPollEndpointOutput); ok {
+			logger.Info("Using cached DiscoverPollEndpoint", logger.Fields{
+				"endpoint":               aws.StringValue(output.Endpoint),
+				"telemetryEndpoint":      aws.StringValue(output.TelemetryEndpoint),
+				"serviceConnectEndpoint": aws.StringValue(output.ServiceConnectEndpoint),
+				"containerInstanceARN":   containerInstanceArn,
+			})
 			return output, nil
 		}
 	}
 
-	// Cache miss, invoke the ECS DiscoverPollEndpoint API.
+	// Cache miss or expired, invoke the ECS DiscoverPollEndpoint API.
 	seelog.Debugf("Invoking DiscoverPollEndpoint for '%s'", containerInstanceArn)
 	output, err := client.standardClient.DiscoverPollEndpoint(&ecs.DiscoverPollEndpointInput{
 		ContainerInstance: &containerInstanceArn,
 		Cluster:           &client.config.Cluster,
 	})
 	if err != nil {
+		// if we got an error calling the API, fallback to an expired cached endpoint if
+		// we have it.
+		if expired {
+			if output, ok := cachedEndpoint.(*ecs.DiscoverPollEndpointOutput); ok {
+				logger.Info("Error calling DiscoverPollEndpoint. Using cached-but-expired endpoint as a fallback.", logger.Fields{
+					"endpoint":               aws.StringValue(output.Endpoint),
+					"telemetryEndpoint":      aws.StringValue(output.TelemetryEndpoint),
+					"serviceConnectEndpoint": aws.StringValue(output.ServiceConnectEndpoint),
+					"containerInstanceARN":   containerInstanceArn,
+				})
+				return output, nil
+			}
+		}
 		return nil, err
 	}
 
 	// Cache the response from ECS.
-	client.pollEndpoinCache.Set(containerInstanceArn, output)
+	client.pollEndpointCache.Set(containerInstanceArn, output)
 	return output, nil
 }
 

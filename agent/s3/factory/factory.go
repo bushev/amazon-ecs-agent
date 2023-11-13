@@ -16,9 +16,11 @@ package factory
 import (
 	"time"
 
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
-	"github.com/aws/amazon-ecs-agent/agent/httpclient"
+	"github.com/aws/amazon-ecs-agent/agent/config"
 	s3client "github.com/aws/amazon-ecs-agent/agent/s3"
+	agentversion "github.com/aws/amazon-ecs-agent/agent/version"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/httpclient"
 
 	"github.com/aws/aws-sdk-go/aws"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
@@ -33,35 +35,54 @@ const (
 )
 
 type S3ClientCreator interface {
-	NewS3ClientForBucket(bucket, region string, creds credentials.IAMRoleCredentials) (s3client.S3Client, error)
+	NewS3ManagerClient(bucket, region string, creds credentials.IAMRoleCredentials) (s3client.S3ManagerClient, error)
+	NewS3Client(bucket, region string, creds credentials.IAMRoleCredentials) (s3client.S3Client, error)
 }
 
+// NewS3ClientCreator provide 2 implementations
+// NewS3ManagerClient implements methods from aws-sdk-go/service/s3manager.
+// NewS3Client implements methods from aws-sdk-go/service/s3.
 func NewS3ClientCreator() S3ClientCreator {
 	return &s3ClientCreator{}
 }
 
 type s3ClientCreator struct{}
 
-// NewS3Client returns a new S3 client based on the region of the bucket.
-func (*s3ClientCreator) NewS3ClientForBucket(bucket, region string,
-	creds credentials.IAMRoleCredentials) (s3client.S3Client, error) {
+// NewS3ManagerClient returns a new S3 client based on the region of the bucket.
+func (*s3ClientCreator) NewS3ManagerClient(bucket, region string,
+	creds credentials.IAMRoleCredentials) (s3client.S3ManagerClient, error) {
 	cfg := aws.NewConfig().
-		WithHTTPClient(httpclient.New(roundtripTimeout, false)).
+		WithHTTPClient(httpclient.New(roundtripTimeout, false, agentversion.String(), config.OSType)).
 		WithCredentials(
 			awscreds.NewStaticCredentials(creds.AccessKeyID, creds.SecretAccessKey,
 				creds.SessionToken)).WithRegion(region)
 	sess := session.Must(session.NewSession(cfg))
-
 	svc := s3.New(sess)
 	bucketRegion, err := getRegionFromBucket(svc, bucket)
 	if err != nil {
 		return nil, err
 	}
-
 	sessWithRegion := session.Must(session.NewSession(cfg.WithRegion(bucketRegion)))
 	return s3manager.NewDownloaderWithClient(s3.New(sessWithRegion)), nil
 }
 
+// NewS3Client returns a new S3 client to support s3 operations which are not provided by s3manager.
+func (*s3ClientCreator) NewS3Client(bucket, region string,
+	creds credentials.IAMRoleCredentials) (s3client.S3Client, error) {
+	cfg := aws.NewConfig().
+		WithHTTPClient(httpclient.New(roundtripTimeout, false, agentversion.String(), config.OSType)).
+		WithCredentials(
+			awscreds.NewStaticCredentials(creds.AccessKeyID, creds.SecretAccessKey,
+				creds.SessionToken)).WithRegion(region)
+	sess := session.Must(session.NewSession(cfg))
+	svc := s3.New(sess)
+	bucketRegion, err := getRegionFromBucket(svc, bucket)
+	if err != nil {
+		return nil, err
+	}
+	sessWithRegion := session.Must(session.NewSession(cfg.WithRegion(bucketRegion)))
+	return s3.New(sessWithRegion), nil
+}
 func getRegionFromBucket(svc *s3.S3, bucket string) (string, error) {
 	input := &s3.GetBucketLocationInput{
 		Bucket: aws.String(bucket),
@@ -73,6 +94,5 @@ func getRegionFromBucket(svc *s3.S3, bucket string) (string, error) {
 	if result.LocationConstraint == nil { // GetBucketLocation returns nil for bucket in us-east-1.
 		return bucketLocationDefault, nil
 	}
-
 	return aws.StringValue(result.LocationConstraint), nil
 }

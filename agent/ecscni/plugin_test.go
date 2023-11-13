@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -28,14 +29,14 @@ import (
 const (
 	// ECSCNIVersion, ECSCNIGitHash, VPCCNIGitHash needs to be updated every time CNI plugin is updated.
 	currentECSCNIVersion = "2020.09.0"
-	currentECSCNIGitHash = "55b2ae77ee0bf22321b14f2d4ebbcc04f77322e1"
-	currentVPCCNIGitHash = "199bfc65cced4951cbb6a38e6e828afa8c2b023c"
+	currentECSCNIGitHash = "53a8481891251e66e35847554d52a13fc7c4fd03"
+	currentVPCCNIGitHash = "be5214353252f8315a1341f4df9ffbd8cf69000c"
 )
 
 // Asserts that CNI plugin version matches the expected version
 func TestCNIPluginVersionNumber(t *testing.T) {
 	versionStr := getCNIVersionString(t)
-	assert.Equal(t, versionStr, currentECSCNIVersion)
+	assert.Equal(t, currentECSCNIVersion, versionStr)
 }
 
 // Asserts that CNI plugin version is upgraded when new commits are made to CNI plugin submodule

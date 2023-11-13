@@ -1,4 +1,5 @@
 //go:build unit
+// +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -16,18 +17,18 @@
 package engine
 
 import (
-	"io/ioutil"
-	"os"
 	"testing"
 
+	ni "github.com/aws/amazon-ecs-agent/ecs-agent/netlib/model/networkinterface"
+
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	"github.com/aws/amazon-ecs-agent/agent/api/eni"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	"github.com/aws/amazon-ecs-agent/agent/data"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	"github.com/aws/amazon-ecs-agent/agent/engine/image"
-
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/attachment"
+	apicontainerstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/container/status"
+	apitaskstatus "github.com/aws/amazon-ecs-agent/ecs-agent/api/task/status"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +52,13 @@ var (
 		TaskARNUnsafe:     testTaskARN,
 		KnownStatusUnsafe: apicontainerstatus.ContainerPulled,
 	}
+	testManagedDaemonContainer = &apicontainer.Container{
+		Name:              "ecs-managed-" + testContainerName,
+		Image:             "ebs-csi-driver",
+		TaskARNUnsafe:     testTaskARN,
+		Type:              apicontainer.ContainerManagedDaemon,
+		KnownStatusUnsafe: apicontainerstatus.ContainerRunning,
+	}
 	testDockerContainer = &apicontainer.DockerContainer{
 		DockerID:  testDockerID,
 		Container: testContainer,
@@ -58,6 +66,10 @@ var (
 	testPulledDockerContainer = &apicontainer.DockerContainer{
 		DockerID:  testDockerID,
 		Container: testPulledContainer,
+	}
+	testManagedDaemonDockerContainer = &apicontainer.DockerContainer{
+		DockerID:  testDockerID,
+		Container: testManagedDaemonContainer,
 	}
 	testTask = &apitask.Task{
 		Arn:                  testTaskARN,
@@ -69,6 +81,20 @@ var (
 		Containers:           []*apicontainer.Container{testContainer, testPulledContainer},
 		LocalIPAddressUnsafe: testTaskIP,
 	}
+	testTaskWithManagedDaemonContainer = &apitask.Task{
+		Arn:                  testTaskARN,
+		Containers:           []*apicontainer.Container{testManagedDaemonContainer},
+		LocalIPAddressUnsafe: testTaskIP,
+		IsInternal:           true,
+		KnownStatusUnsafe:    apitaskstatus.TaskRunning,
+	}
+	testStoppedTaskWithManagedDaemonContainer = &apitask.Task{
+		Arn:                  testTaskARN,
+		Containers:           []*apicontainer.Container{testManagedDaemonContainer},
+		LocalIPAddressUnsafe: testTaskIP,
+		IsInternal:           true,
+		KnownStatusUnsafe:    apitaskstatus.TaskStopped,
+	}
 	testImageState = &image.ImageState{
 		Image:         testImage,
 		PullSucceeded: false,
@@ -77,29 +103,29 @@ var (
 		ImageID: testImageId,
 	}
 
-	testENIAttachment = &eni.ENIAttachment{
-		AttachmentARN:    testAttachmentArn,
-		AttachStatusSent: false,
-		MACAddress:       testMac,
+	testENIAttachment = &ni.ENIAttachment{
+		AttachmentInfo: attachment.AttachmentInfo{
+			AttachmentARN:    testAttachmentArn,
+			AttachStatusSent: false,
+		},
+		MACAddress: testMac,
 	}
 )
 
-func newTestDataClient(t *testing.T) (data.Client, func()) {
-	testDir, err := ioutil.TempDir("", "agent_engine_unit_test")
-	require.NoError(t, err)
+func newTestDataClient(t *testing.T) data.Client {
+	testDir := t.TempDir()
 
 	testClient, err := data.NewWithSetup(testDir)
+	require.NoError(t, err)
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		require.NoError(t, testClient.Close())
-		require.NoError(t, os.RemoveAll(testDir))
-	}
-	return testClient, cleanup
+	})
+	return testClient
 }
 
 func TestLoadState(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		state:      dockerstate.NewTaskEngineState(),
@@ -135,9 +161,76 @@ func TestLoadState(t *testing.T) {
 	assert.Equal(t, testTaskARN, arn)
 }
 
+func TestLoadStateWithManagedDaemon(t *testing.T) {
+	dataClient := newTestDataClient(t)
+
+	engine := &DockerTaskEngine{
+		state:       dockerstate.NewTaskEngineState(),
+		dataClient:  dataClient,
+		daemonTasks: make(map[string]*apitask.Task),
+	}
+
+	require.NoError(t, dataClient.SaveTask(testTaskWithManagedDaemonContainer))
+	require.NoError(t, dataClient.SaveDockerContainer(testManagedDaemonDockerContainer))
+	require.NoError(t, dataClient.SaveENIAttachment(testENIAttachment))
+	require.NoError(t, dataClient.SaveImageState(testImageState))
+
+	require.NoError(t, engine.LoadState())
+	task, ok := engine.state.TaskByArn(testTaskARN)
+	assert.True(t, ok)
+	assert.Equal(t, apicontainerstatus.ContainerRunning, task.Containers[0].GetKnownStatus())
+	_, ok = engine.state.ContainerByID(testDockerID)
+	assert.True(t, ok)
+	assert.Len(t, engine.state.AllImageStates(), 1)
+	assert.Len(t, engine.state.AllENIAttachments(), 1)
+
+	// Check ip <-> task arn mapping is loaded in state.
+	ip, ok := engine.state.GetIPAddressByTaskARN(testTaskARN)
+	require.True(t, ok)
+	assert.Equal(t, testTaskIP, ip)
+	arn, ok := engine.state.GetTaskByIPAddress(testTaskIP)
+	require.True(t, ok)
+	assert.Equal(t, testTaskARN, arn)
+
+	assert.NotNil(t, engine.GetDaemonTask("ebs-csi-driver"))
+}
+
+func TestLoadStateWithStoppedManagedDaemon(t *testing.T) {
+	dataClient := newTestDataClient(t)
+
+	engine := &DockerTaskEngine{
+		state:       dockerstate.NewTaskEngineState(),
+		dataClient:  dataClient,
+		daemonTasks: make(map[string]*apitask.Task),
+	}
+
+	require.NoError(t, dataClient.SaveTask(testStoppedTaskWithManagedDaemonContainer))
+	require.NoError(t, dataClient.SaveDockerContainer(testManagedDaemonDockerContainer))
+	require.NoError(t, dataClient.SaveENIAttachment(testENIAttachment))
+	require.NoError(t, dataClient.SaveImageState(testImageState))
+
+	require.NoError(t, engine.LoadState())
+	task, ok := engine.state.TaskByArn(testTaskARN)
+	assert.True(t, ok)
+	assert.Equal(t, apicontainerstatus.ContainerRunning, task.Containers[0].GetKnownStatus())
+	_, ok = engine.state.ContainerByID(testDockerID)
+	assert.True(t, ok)
+	assert.Len(t, engine.state.AllImageStates(), 1)
+	assert.Len(t, engine.state.AllENIAttachments(), 1)
+
+	// Check ip <-> task arn mapping is loaded in state.
+	ip, ok := engine.state.GetIPAddressByTaskARN(testTaskARN)
+	require.True(t, ok)
+	assert.Equal(t, testTaskIP, ip)
+	arn, ok := engine.state.GetTaskByIPAddress(testTaskIP)
+	require.True(t, ok)
+	assert.Equal(t, testTaskARN, arn)
+
+	assert.Nil(t, engine.GetDaemonTask("ebs-csi-driver"))
+}
+
 func TestSaveState(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		state:      dockerstate.NewTaskEngineState(),
@@ -167,8 +260,7 @@ func TestSaveState(t *testing.T) {
 }
 
 func TestSaveStateEnsureBoltDBCompatibility(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		state:      dockerstate.NewTaskEngineState(),
@@ -205,8 +297,7 @@ func TestSaveStateEnsureBoltDBCompatibility(t *testing.T) {
 }
 
 func TestSaveAndRemoveTaskData(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		dataClient: dataClient,
@@ -223,8 +314,7 @@ func TestSaveAndRemoveTaskData(t *testing.T) {
 }
 
 func TestSaveContainerData(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		dataClient: dataClient,
@@ -236,8 +326,7 @@ func TestSaveContainerData(t *testing.T) {
 }
 
 func TestSaveDockerContainerData(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		dataClient: dataClient,
@@ -252,8 +341,7 @@ func TestSaveDockerContainerData(t *testing.T) {
 }
 
 func TestSaveAndRemoveImageStateData(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	imageManager := &dockerImageManager{
 		dataClient: dataClient,
@@ -270,8 +358,7 @@ func TestSaveAndRemoveImageStateData(t *testing.T) {
 }
 
 func TestRemoveENIAttachmentData(t *testing.T) {
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	engine := &DockerTaskEngine{
 		state:      dockerstate.NewTaskEngineState(),

@@ -1,4 +1,5 @@
 //go:build windows && unit
+// +build windows,unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
 //
@@ -50,6 +51,7 @@ func TestMarshalTaskVolumeFSxWindowsFileServer(t *testing.T) {
 		"Arn": "test",
 		"Family": "",
 		"Version": "",
+		"ServiceName": "",
 		"Containers": null,
 		"associations": null,
 		"resources": null,	
@@ -75,8 +77,6 @@ func TestMarshalTaskVolumeFSxWindowsFileServer(t *testing.T) {
 		"PullStoppedAt": "0001-01-01T00:00:00Z",
 		"ExecutionStoppedAt": "0001-01-01T00:00:00Z",
 		"SentStatus": "NONE",
-		"StartSequenceNumber": 0,
-		"StopSequenceNumber": 0,
 		"executionCredentialsID": "",
 		"ENI": null,
 		"AppMesh": null,
@@ -116,8 +116,6 @@ func TestUnmarshalTaskVolumeFSxWindowsFileServer(t *testing.T) {
 		"PullStoppedAt": "0001-01-01T00:00:00Z",
 		"ExecutionStoppedAt": "0001-01-01T00:00:00Z",
 		"SentStatus": "NONE",
-		"StartSequenceNumber": 0,
-		"StopSequenceNumber": 0,
 		"executionCredentialsID": "",
 		"ENI": null,
 		"AppMesh": null,
