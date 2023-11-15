@@ -482,11 +482,7 @@ install-ecs-agent() {
     dir="$(mktemp -d)"
     case "$PKG_MANAGER" in
     apt)
-        curl-helper "$dir/$DEB_PKG_NAME" "$DEB_URL"
-        if $CHECK_SIG; then
-            curl-helper "$dir/$DEB_PKG_NAME.asc" "$DEB_URL.asc"
-            ecs-init-signature-verify "$dir/$DEB_PKG_NAME.asc" "$dir/$DEB_PKG_NAME"
-        fi
+        cp ~/amazon-ecs-agent/amazon-ecs-init_*_amd64.deb "$dir/$DEB_PKG_NAME"
         chmod -R a+rX "$dir"
         apt install -y "$dir/$DEB_PKG_NAME"
         rm -rf "$dir"
